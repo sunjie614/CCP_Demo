@@ -2,7 +2,7 @@
 #define IDENTIFICATION_H
 #include "stdbool.h"
 #include "stdint.h"
-
+#include "MTPA.h"
 #define CURRENT_FILTER_ALPHA 0.1F
 #define CURRENT_LIMIT 10.0F  // 最大允许电流（A）
 #define CURRENT_RATIO 0.8F   // 估 Rs 时允许的最大电流
@@ -156,5 +156,5 @@ void Experiment_Init(FluxExperiment_t* exp, float Ts, int sample_capacity, int r
 // void MTPA_Init(void);
 // void MTPA_SetCurrent(float current);
 // float MTPA_GetCurrent(void);
-
+void assign_parameters_from_LLS(LLS_Result_t res);
 #endif /* MTPA_H */

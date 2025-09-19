@@ -3,18 +3,18 @@
 
 #include <stdint.h>
 #include <stdatomic.h>
-#include <identification.h>
+
 #ifndef __DMB
   #define __DMB()  atomic_thread_fence(memory_order_seq_cst)
 #endif
 
 
 // ==================== 参数定义 ====================
-#define MAX_POINTS    14       // 表最多存 10 个点 (8 固定 + 2 动态)
-#define DELTA_I    0.5  // Iq 区间收敛阈值
+#define MAX_POINTS    15       // 表最多存 10 个点 (8 固定 + 2 动态)
+#define DELTA_I    0.8  // Iq 区间收敛阈值
 #define delta_iq      0.1    // Iq 收敛阈值 (A)
 #define DELTA_STABLE  0.1    // 电流稳定阈值 (A)
-#define STABLE_COUNT  10      // 连续稳定采样次数，才更新
+#define STABLE_COUNT  20      // 连续稳定采样次数，才更新
 
 // ==================== 数据结构 ====================
 typedef struct {
@@ -63,6 +63,6 @@ float MTPA_find_theta(float psi);
 float calc_torque(float psi_d, float psi_q, float id, float iq);
 float objective(float psi, float theta);
 void post_req_from_isr(float psi_mid, float iq_meas);
-void assign_parameters_from_LLS(LLS_Result_t res);
+
 
 #endif // MTPA_H

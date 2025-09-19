@@ -107,10 +107,6 @@ void Experiment_Step(FluxExperiment_t* exp, float Id, float Iq, float* Ud, float
       float Voltage_out = 0.0f;
       float Rs_tmp = 0.0f;
 
-      // 直接把 Rs 估计电压输出到电机
-      *Ud = Voltage_out;
-      *Uq = 0.0f;
-
       if (Estimate_Rs(Id, &Voltage_out, &Rs_tmp))
       {
         // 保存 Rs
@@ -123,6 +119,9 @@ void Experiment_Step(FluxExperiment_t* exp, float Id, float Iq, float* Ud, float
         // exp->state = INJECT_COLLECT;
         exp->state = WAIT;
       }
+            // 直接把 Rs 估计电压输出到电机
+      *Ud = Voltage_out;
+      *Uq = 0.0f;
       break;
     }
 
@@ -173,7 +172,7 @@ void Experiment_Step(FluxExperiment_t* exp, float Id, float Iq, float* Ud, float
         if (cal_single_psi(exp) == false)
         {
           // 无效数据，直接重试
-          exp->inj.State = true;
+          //exp->inj.State = true;
           exp->state = INJECT_COLLECT;
           break;
         }
@@ -185,7 +184,7 @@ void Experiment_Step(FluxExperiment_t* exp, float Id, float Iq, float* Ud, float
         else
         {
           // 未达到重复次数
-          exp->inj.State = true;  // 重新开启注入
+          //exp->inj.State = true;  // 重新开启注入
           exp->state = INJECT_COLLECT;
         }
       }
@@ -239,7 +238,7 @@ void Experiment_Step(FluxExperiment_t* exp, float Id, float Iq, float* Ud, float
         Cross_Axis_LLS(exp, &exp->LLS.DQ);  // (S=5,T=1,U=1,V=0)
       }
 
-      exp->state = PENDING;
+      exp->state = WAIT;
       break;
     }
     case PENDING:
@@ -564,7 +563,7 @@ bool cal_single_psi(FluxExperiment_t* exp)
   int s_idx = exp->edge_idx[0];
   int e_idx = exp->edge_idx[1];
   // 检查样本数是否足够
-  if (s_idx <= e_idx + 1)
+  if (e_idx <= s_idx + 1)
   {
     // 本次周期数据不足，重做一次采集（不计入 repeat_count）
     exp->pos = 0;

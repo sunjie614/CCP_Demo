@@ -94,6 +94,7 @@
         "optional": "c",
         "ranges": "c",
         "tuple": "c",
-        "vector": "c"
+        "vector": "c",
+        "position_sensor.h": "c"
     },
 }

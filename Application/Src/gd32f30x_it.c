@@ -191,14 +191,6 @@ void ADC0_1_IRQHandler(void)
           Id_max = FOC.Id;
           Theta_max = FOC.Theta;
         }
-
-        // float DMA_Buffer[5];
-        // DMA_Buffer[0] = VoltageInjector.Vd;
-        // DMA_Buffer[1] = VoltageInjector.Vq;
-        // DMA_Buffer[2] = FOC.Id;
-        // DMA_Buffer[3] = FOC.Iq;
-        // DMA_Buffer[4] = (float)VoltageInjector.Count;
-        // justfloat(DMA_Buffer, 5);
         break;
       }
       case EXIT:
@@ -213,6 +205,14 @@ void ADC0_1_IRQHandler(void)
     FOC_Main();
 
     Peripheral_SetPWMChangePoint();
+
+        float DMA_Buffer[5];
+        DMA_Buffer[0] = FOC.Ia;
+        DMA_Buffer[1] = FOC.Ud_ref;
+        DMA_Buffer[2] = FOC.Uq_ref;
+        DMA_Buffer[3] = FOC.Id;
+        DMA_Buffer[4] = FOC.Iq;
+        justfloat(DMA_Buffer, 5);
   }
   uint32_t cnt_end = (TIMER_CNT(TIMER1));
    

@@ -14,12 +14,12 @@ static int stable_counter = 0;    // 稳定计数器
 
 // ==================== MTPA 求解函数(用户需实现) ====================
 
-/*float a_d = 5.59756, b_d = 5.15426, m = 5.0;
+float a_d = 5.59756, b_d = 5.15426, m = 5.0;
 float a_q = 6.306, b_q = 171.571, n = 1.0;
-float c_coeff = 35.90, h = 1.0, j = 0.0;*/
-float extern a_d = 6.019, b_d = 4.3238, m = 5.0;
+float c_coeff = 35.90, h = 1.0, j = 0.0;
+/*float extern a_d = 6.019, b_d = 4.3238, m = 5.0;
 float extern  a_q = 10.524, b_q = 128.6657, n = 1.0;
-float extern c_coeff = 62.6, h = 1.0, j = 0.0;
+float extern c_coeff = 62.6, h = 1.0, j = 0.0;*/
 
 // ---------- 电流模型 (ψd, ψq → id, iq) ----------
 float calc_id(float psi_d, float psi_q) {
@@ -290,7 +290,9 @@ extern void insert_point_on_build(MTPA_Point p);
 
 void MTPA_service_tick(void)
 {
+    
     if (!mtpa_req_pending) return;
+    
 
     // 取出请求并清零（不关中断，先读内容再清标志）
     float psi_mid = mtpa_req_mb.psi_mid;
@@ -310,6 +312,8 @@ void MTPA_service_tick(void)
 }
 void MTPA_update_ISR(float Iq_meas)
 {
+    static int send_cooldown = 0;
+    const int SEND_INTERVAL = 200; // 调用间隔，可根据实际调整
     // 取活动表的快照（不关中断）
     MTPA_Point *T; int N; mtpa_snapshot_for_isr(&T, &N);
     if (N < 2) return;
@@ -332,13 +336,20 @@ void MTPA_update_ISR(float Iq_meas)
 
             // 早退条件（照旧）
             if (stable_counter < STABLE_COUNT) return;
+            
             if (fabsf(T[i+1].Iq - T[i].Iq) < DELTA_I) return;
             if (fabsf(T[i].Iq - Iq_meas) < delta_iq ||fabsf(T[i+1].Iq - Iq_meas) < delta_iq) return;
 
+             // 间隔控制，禁止连续发指令
+            if (send_cooldown > 0) {
+                send_cooldown--;
+                return;
+            }
+            send_cooldown = SEND_INTERVAL;
             // —— 只“发指令”，不做计算 —— 
             float psi_mid = 0.5f * (T[i].Psi_s + T[i+1].Psi_s);
             if (!mtpa_req_pending) { post_req_from_isr(psi_mid, Iq_meas); }
-            stable_counter = 0;
+            stable_counter = 0; // 重置计数器
             return;
         }
     }
