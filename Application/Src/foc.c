@@ -113,18 +113,18 @@ void FOC_Main(void)
      IQtest+=0.0005;
      if(IQtest>=IQtestMax){IQtest=IQtestMax;}*/
     //FOC.Id_ref = ((MTPA.A * FOC.Iq_ref + MTPA.B) * FOC.Iq_ref + MTPA.C) * FOC.Iq_ref + MTPA.D;
-    //   float iq_meas = FOC.Iq_ref ;
-    //  if (FOC.Iq_ref>=0)
-    //     {
-    //     MTPA_update_ISR(iq_meas);
-    //     FOC.Id_ref = Id_mtpa;
-    //     }
-    //     else
-    //     {
-    //       MTPA_update_ISR(-iq_meas);
-    //       FOC.Id_ref = Id_mtpa;
-    //     }
-      FOC.Id_ref =0;
+      float iq_meas = FOC.Iq_ref ;
+     if (FOC.Iq_ref>=0)
+        {
+        MTPA_update_ISR(iq_meas);
+        FOC.Id_ref = Id_mtpa;
+        }
+        else
+        {
+          MTPA_update_ISR(-iq_meas);
+          FOC.Id_ref = Id_mtpa;
+        }
+       
       // FOC.Id_ref = IQtest;
       PID_Controller(FOC.Id_ref, FOC.Id, &Id_PID);
       PID_Controller(FOC.Iq_ref, FOC.Iq, &Iq_PID);
@@ -197,20 +197,20 @@ void Parameter_Init(void)
 
   STOP = 1;
 
-  Motor.Rs = 1.25F;
-  Motor.Ld = 0.006F;
-  Motor.Lq = 0.009F;
+  Motor.Rs = 0.65F;
+  Motor.Ld = 0.18F;
+  Motor.Lq = 0.12F;
   Motor.Flux = 0.1F;
-  Motor.Pn = 5.0F;
-  Motor.Position_Scale = 65536 - 1;
+  Motor.Pn = 2.0F;
+  Motor.Position_Scale = 10000 - 1;
   Motor.Resolver_Pn = 1.0F;
-  Motor.inv_MotorPn = 1.0F / 5.0F;  // Pn
-  Motor.Position_Offset = 39254.0F;
+  Motor.inv_MotorPn = 1.0F / 2.0F;  // Pn
+  Motor.Position_Offset = 107.0F;
 
-  // MTPA.A = 0.00061141F;
-  // MTPA.B = -0.014627F;
-  // MTPA.C = 0.34737F;
-  // MTPA.D = 0.068985F;
+  MTPA.A = 0.00061141F;
+  MTPA.B = -0.014627F;
+  MTPA.C = 0.34737F;
+  MTPA.D = 0.068985F;
 
 #ifdef Resolver_Position
   theta_factor = M_2PI / ((Motor.Position_Scale + 1) * Motor.Resolver_Pn);
@@ -218,8 +218,8 @@ void Parameter_Init(void)
 #ifdef Encoder_Position
   theta_factor = M_2PI / (float)(Motor.Position_Scale + 1);
 #endif
-  Speed_PID.Kp = 0.01F;
-  Speed_PID.Ki = 0.02F;
+  Speed_PID.Kp = 0.003F;
+  Speed_PID.Ki = 0.001F;
   Speed_PID.Kd = 0.0F;
   Speed_PID.MaxOutput = 0.7F * FOC.I_Max;  // Maximum Iq
   Speed_PID.MinOutput = -0.7F * FOC.I_Max;
@@ -236,8 +236,8 @@ void Parameter_Init(void)
   Speed_Ramp.target = 0.0F;
   Speed_Ramp.Ts = 10 * FOC.Ts;
 
-  Id_PID.Kp = 1.28F;
-  Id_PID.Ki = 288.0F;
+  Id_PID.Kp = 73.8274273F;
+  Id_PID.Ki = 408.40704496F;
   Id_PID.Kd = 0.0F;
   Id_PID.MaxOutput = 150.0F;  // Maximum Udc/sqrt(3)
   Id_PID.MinOutput = -150.0F;
@@ -247,8 +247,8 @@ void Parameter_Init(void)
   Id_PID.output = 0.0F;
   Id_PID.Ts = FOC.Ts;
 
-  Iq_PID.Kp = 2.32F;
-  Iq_PID.Ki = 288.0F;
+  Iq_PID.Kp = 27.646015F;
+  Iq_PID.Ki = 408.40704496F;
   Iq_PID.Kd = 0.0F;
   Iq_PID.MaxOutput = 130.0F;
   Iq_PID.MinOutput = -130.0F;
