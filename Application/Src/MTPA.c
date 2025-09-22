@@ -1,745 +1,374 @@
 #include "MTPA.h"
-#include <stdbool.h>
-#include <string.h>
-#include "math.h"
-#include "stdint.h"
 
-/* Estimate_Rs 与 SquareWaveGenerater 原型（你已有的实现） */
-static inline bool Estimate_Rs(float Current, float* Voltage_out, float* Rs);
-static LLS_Result_t Single_Axis_LLS(FluxExperiment_t* exp, int exponent);
-static void process_cycle_for_dq_adq(FluxExperiment_t* exp, int s);
+#include <math.h>
 
-/* 结果结构：每个 Imax 只保存最终的 avg_max_psi（和 Imax 值） */
 
-volatile float g_results_Imax[MAX_STEPS];
-volatile float g_results_avgmax[MAX_STEPS];
-volatile float g_results_ad0;
-volatile float g_results_add;
-volatile float g_results_aq0;
-volatile float g_results_aqq;
-volatile uint32_t g_results_cycles[MAX_STEPS];
+typedef struct { float psi_mid; float iq_meas; } MTPA_Req;
+static MTPA_Req    mtpa_req_mb;
+  
+// ==================== 全局变量 ====================
+MTPA_Point MTPA_table[MAX_POINTS];
+int point_count = 0;
+float Id_mtpa = 0.0f;
+static float last_Iq_meas = 0.0F; // 上一次测量的 Iq
+static int stable_counter = 0;    // 稳定计数器
 
-// 当前步索引
-volatile uint32_t g_result_index = 0;
+// ==================== MTPA 求解函数(用户需实现) ====================
 
-// 保存一次结果
-void save_result(float Imax, float avgmax, uint32_t cycles)
-{
-  if (g_result_index < MAX_STEPS)
-  {
-    g_result_index++;
-    g_results_Imax[g_result_index] = Imax;
-    g_results_avgmax[g_result_index] = avgmax;
-    g_results_cycles[g_result_index] = cycles;
-  }
+/*float a_d = 5.59756, b_d = 5.15426, m = 5.0;
+float a_q = 6.306, b_q = 171.571, n = 1.0;
+float c_coeff = 35.90, h = 1.0, j = 0.0;*/
+extern  float a_d = 6.019F, b_d = 4.3238F, m = 5.0F;
+float a_q = 10.524F, b_q = 128.6657F, n = 1.0F;
+float c_coeff = 62.6F, h = 1.0F, j = 0.0F;
+
+// ---------- 电流模型 (ψd, ψq → id, iq) ----------
+float calc_id(float psi_d, float psi_q) {
+    float term = a_d + b_d * powf(fabsf(psi_d), m)
+                + (c_coeff / (j + 2.0F)) * powf(fabsf(psi_d), h) * powf(fabsf(psi_q), j + 2.0F);
+    return term * psi_d;
 }
 
-/* ---------- 初始化 ---------- */
-void Experiment_Init(FluxExperiment_t* exp, float Ts, int sample_capacity, int repeat_times,
-                     int max_steps, int start_I, int final_I, int step_dir, float inject_amp)
-{
-  // clip params
-  if (sample_capacity > SAMPLE_CAPACITY) sample_capacity = SAMPLE_CAPACITY;
-  if (max_steps > MAX_STEPS) max_steps = MAX_STEPS;
-  if (repeat_times > REPEAT_TIMES) repeat_times = REPEAT_TIMES;
-
-  memset(exp, 0, sizeof(FluxExperiment_t));
-  exp->Ts = Ts;
-  exp->sample_capacity = sample_capacity;
-  exp->max_steps = max_steps;
-  exp->repeat_times = repeat_times;
-  exp->wait_edges = 3;
-  exp->start_I = start_I;
-  exp->final_I = final_I;
-  exp->step_dir = (step_dir >= 0) ? 1 : -1;
-  exp->inject_amp = inject_amp;
-  exp->Running = false;
-  exp->pos = 0;
-  exp->edge_count = 0;
-  exp->step_index = 0;
-  exp->state = WAIT;
-  exp->last_Vd = 0.0f;
-  exp->last_Vq = 0.0f;
+float calc_iq(float psi_d, float psi_q) {
+    float term = a_q + b_q * powf(fabsf(psi_q), n)
+                + (c_coeff / (h + 2.0F)) * powf(fabsf(psi_q), j) * powf(fabsf(psi_d), h + 2.0F);
+    return term * psi_q;
 }
 
-void Experiment_Step(FluxExperiment_t* exp, float Id, float Iq, float* Ud, float* Uq)
+// ---------- 转矩计算 ----------
+float calc_torque(float psi_d, float psi_q, float id, float iq) {
+    return 1.5F * POLE_PAIRS * (psi_d * iq - psi_q * id);
+}
+
+// ---------- 目标函数 J = T / Is ----------
+float objective(float psi, float theta) {
+    float psi_d = psi * COS(theta);
+    float psi_q = psi * SIN(theta);
+
+    float id = calc_id(psi_d, psi_q);
+    float iq = calc_iq(psi_d, psi_q);
+
+    // float Is =sqrt( id * id + iq * iq);
+    // if (Is < 1e-6) return 0.0F; // 避免除零
+
+    // float T = calc_torque(psi_d, psi_q, id, iq);
+    // return T / Is;
+     float Is2 =( id * id + iq * iq);
+    if (Is2 < 1e-6) return 0.0F; // 避免除零
+
+    float T = calc_torque(psi_d, psi_q, id, iq);
+    if(T>0){return (T*T) / Is2;}
+    else{return 0.0F;}
+    
+}
+
+// ---------- 黄金分割搜索 MTPA ----------
+float MTPA_find_theta(float psi) {
+    float left = 0.0F;
+    float right = M_PI / 2.0F;
+
+    float c = right - (right - left) * GOLDEN_RATIO;
+    float d = left + (right - left) * GOLDEN_RATIO;
+
+    float Jc = objective(psi, c);
+    float Jd = objective(psi, d);
+
+    while ((right - left) > DELTA_THETA) {
+        if (Jc > Jd) {
+            right = d;
+            d = c;
+            Jd = Jc;
+            c = right - (right - left) * GOLDEN_RATIO;
+            Jc = objective(psi, c);
+        } else {
+            left = c;
+            c = d;
+            Jc = Jd;
+            d = left + (right - left) * GOLDEN_RATIO;
+            Jd = objective(psi, d);
+        }
+    }
+
+    return 0.5F * (left + right); // 最优角
+}
+
+
+// 输入：磁链幅值 Psi_s
+// 输出：对应 MTPA 点 (Iq,Iq)
+MTPA_Point calc_MTPA_point(float PSI_s)
+ {
+    MTPA_Point p;
+    p.Psi_s = PSI_s;
+    float theta_opt = MTPA_find_theta(PSI_s);
+    float psi_d = p.Psi_s * COS(theta_opt);
+    float psi_q = p.Psi_s * SIN(theta_opt);
+    p.PSI_theta = theta_opt;
+
+    float id = calc_id(psi_d, psi_q);
+    float iq = calc_iq(psi_d, psi_q);
+    
+    p.Iq = iq;
+    p.Id = id;
+
+    p.is_fixed = 0;
+    return p;
+}
+
+// ==================== 插点并排序 ====================
+//static void insert_point(MTPA_Point newP) {
+//    if (point_count < MAX_POINTS) {
+//        MTPA_table[point_count++] = newP;
+//    } else {
+        // 找到最远的非固定点，替换掉
+//        int far_idx = -1;
+  //      float max_dist = -1;
+  //      for (int j = 0; j < point_count; j++) {
+  //          if (!MTPA_table[j].is_fixed) {
+  //              float dist = fabs(MTPA_table[j].Iq - newP.Iq);
+  //              if (dist > max_dist) {
+   //                 max_dist = dist;
+  //                  far_idx = j;
+   //             }
+   //         }
+    //    }
+   //     if (far_idx >= 0) {
+    //        MTPA_table[far_idx] = newP;
+    //    }
+    //}
+
+    // 排序（按 Iq 从小到大）
+    //for (int i = 0; i < point_count - 1; i++) {
+    //    for (int j = 0; j < point_count - 1 - i; j++) {
+    //        if (MTPA_table[j].Iq > MTPA_table[j + 1].Iq) {
+    //            MTPA_Point tmp = MTPA_table[j];
+    //            MTPA_table[j] = MTPA_table[j + 1];
+    //            MTPA_table[j + 1] = tmp;
+    //        }
+    //    }
+  //  }
+//}
+
+/*** 两份表 ***/
+static MTPA_Point tblA[MAX_POINTS], tblB[MAX_POINTS];
+static MTPA_Point *active_tbl = tblA;  static int active_cnt = 0;   // ISR 只读
+static MTPA_Point *build_tbl  = tblB;  static int build_cnt  = 0;   // 主循环只写
+
+/*** 版本号：偶数=稳定；发布时先++(奇)，写指针，再++(偶) ***/
+static volatile uint16_t mtpa_seq = 0;
+
+/*** 给ISR的“一致快照” ***/
+static inline void mtpa_snapshot_for_isr(MTPA_Point **t, int *n){
+    uint16_t s1 = 0, s2 = 0;
+    do {
+        s1 = mtpa_seq; __THREAD_FENCE();
+        *t = active_tbl; *n = active_cnt;
+        __THREAD_FENCE(); s2 = mtpa_seq;
+    } while ((s1 != s2) || (s1 & 1U));   // 若发布中(奇数)或不一致，则重读
+}
+
+/*** 主循环发布（不关中断） ***/
+static inline void mtpa_publish_from_main(void){
+    mtpa_seq++; __THREAD_FENCE();                 // 进入发布（奇数）
+    active_tbl = build_tbl; active_cnt = build_cnt;
+    __THREAD_FENCE(); mtpa_seq++; 
+    if(mtpa_seq>=60){mtpa_seq=0;}
+                   // 发布完成（偶数）
+    // 交换角色，清空 build 计数
+    build_tbl  = (build_tbl == tblB) ? tblA : tblB;
+    //build_cnt  = 0;
+}
+
+/*** 在 build 上插入并按 Iq 排序 ***/
+
+static void insert_point_on_build(MTPA_Point newP)
 {
-  if (!exp) return;
-
-  switch (exp->state)
-  {
-    case WAIT:
-      *Ud = 0.0f;
-      *Uq = 0.0f;
-      //   if (exp->Running && exp->Rs_est == 0.0F)
-      //   {
-      //     exp->state = EST_RS;
-      //   }
-      //   if (exp->Running && exp->Rs_est != 0.0F)
-      //   {
-      //     exp->state = INJECT_COLLECT;
-      //   }
-
-      return;
-
-    case EST_RS:
-    {
-      float Voltage_out = 0.0f;
-      float Rs_tmp = 0.0f;
-
-      bool done = Estimate_Rs(Id, &Voltage_out, &Rs_tmp);
-
-      // 直接把 Rs 估计电压输出到电机
-      *Ud = Voltage_out;
-      *Uq = 0.0f;
-
-      if (done)
-      {
-        // 保存 Rs
-        exp->Rs_est = Rs_tmp;
-
-        // 关闭电压输出
-        *Ud = 0.0f;
-        *Uq = 0.0f;
-
-        // 初始化方波注入器
-        exp->inj.Ud_amp = 0.0F;
-        exp->inj.Uq_amp = 0.0F;
-        exp->inj.Imax = 0.0F;
-        exp->inj.State = false;
-        exp->inj.mode = INJECT_D;
-        exp->inj.inj_state_d = 0;
-        exp->inj.inj_state_q = 0;
-
-        exp->pos = 0;
-        exp->edge_count = 0;
-        exp->last_Vd = 0.0f;
-        exp->last_Vq = 0.0f;
-        // exp->state = INJECT_COLLECT;
-        exp->state = WAIT;
-      }
-      break;
-    }
-
-    case INJECT_COLLECT:
-    {
-      if (exp->inj.State == false)
-      {
-        exp->inj.Vd = 0.0F;
-        exp->inj.Vq = 0.0F;
-        *Ud = exp->inj.Vd;
-        *Uq = exp->inj.Vq;
-        break;
-      }
-
-      if (exp->inj.State)
-      {
-        // --- 方波注入 D 轴 ---
-        if (exp->inj.mode == INJECT_D || exp->inj.mode == INJECT_DQ)
-        {
-          if (Id >= exp->inj.Imax)
-          {
-            exp->inj.inj_state_d = -1;
-          }
-          else if (Id <= -exp->inj.Imax)
-          {
-            exp->inj.inj_state_d = +1;
-          }
-          exp->inj.Vd = (exp->inj.inj_state_d >= 0) ? exp->inj.Ud_amp : -exp->inj.Ud_amp;
-        }
-
-        // --- 方波注入 Q 轴 ---
-        if (exp->inj.mode == INJECT_Q || exp->inj.mode == INJECT_DQ)
-        {
-          if (Iq >= exp->inj.Imax)
-          {
-            exp->inj.inj_state_q = -1;
-          }
-          else if (Iq <= -exp->inj.Imax)
-          {
-            exp->inj.inj_state_q = +1;
-          }
-          exp->inj.Vq = (exp->inj.inj_state_q >= 0) ? exp->inj.Uq_amp : -exp->inj.Uq_amp;
-        }
-
-        // 本次输出电压
-        *Ud = exp->inj.Vd;
-        *Uq = exp->inj.Vq;
-      }
-
-      bool edge_detected = false;
-
-      if (exp->inj.mode == INJECT_D || exp->inj.mode == INJECT_DQ)
-      {
-        if (*Ud == -exp->last_Vd) edge_detected = true;
-      }
-      if (exp->inj.mode == INJECT_Q)
-      {
-        if (*Uq == -exp->last_Vq) edge_detected = true;
-      }
-
-      if (edge_detected)
-      {
-        exp->edge_count++;
-
-        // 第一次有效边沿，记录起点
-        if (exp->edge_count == exp->wait_edges + 1)
-        {
-          exp->pos = 0;  // buffer 从 0 开始存
-          exp->edge_idx[0] = 0;
-        }
-
-        // 收到 wait_edges + 3 个边沿时，说明完整周期结束
-        if (exp->edge_count == exp->wait_edges + 3)
-        {
-          exp->edge_idx[1] = exp->pos;
-          exp->state = PROCESS;
-          exp->inj.State = false;
-          exp->inj.Vd = 0.0F;
-          exp->inj.Vq = 0.0F;
-          *Ud = exp->inj.Vd;
-          *Uq = exp->inj.Vq;
-        }
-      }
-
-      // --- 存 buffer（仅在等待期结束后才写入） ---
-      if (exp->edge_count >= exp->wait_edges + 1)
-      {
-        if (exp->pos < exp->sample_capacity)
-        {
-          int idx = exp->pos;
-          exp->Ud_buf[idx] = exp->last_Vd;
-          exp->Id_buf[idx] = Id;
-          exp->Uq_buf[idx] = exp->last_Vq;
-          exp->Iq_buf[idx] = Iq;
-
-          if (idx == 0)
-          {
-            exp->psi_d_buf[idx] = 0.0f;
-            exp->psi_q_buf[idx] = 0.0f;
-          }
-          else
-          {
-            int prev = idx - 1;
-            float integrand_d = (exp->last_Vd - exp->Rs_est * Id);
-            float integrand_q = (exp->last_Vq - exp->Rs_est * Iq);
-            exp->psi_d_buf[idx] = exp->psi_d_buf[prev] + exp->Ts * integrand_d;
-            exp->psi_q_buf[idx] = exp->psi_q_buf[prev] + exp->Ts * integrand_q;
-          }
-          exp->pos++;
-
-          if (exp->inj.mode == INJECT_DQ)
-          {
-            exp->repeat_count ++;
-          }
-        }
-        else
-        {
-          // buffer 满，进入处理
-          exp->state = PROCESS;
-          exp->inj.State = false;
-          exp->inj.Vd = 0.0F;
-          exp->inj.Vq = 0.0F;
-          *Ud = exp->inj.Vd;
-          *Uq = exp->inj.Vq;
-        }
-      }
-      exp->last_Vd = *Ud;
-      exp->last_Vq = *Uq;
-      break;
-    }
-
-    case PROCESS:
-    {
-      // ---- 用 INJECT_COLLECT 写好的两个索引表示一个周期 ----
-      // edge_idx[0] = 起点（写入 buffer 时的 0）
-      // edge_idx[1] = 结束位置（写入时 pos）
-      exp->inj.State = false;
-      if (exp->edge_count < 2)
-      {
-        // 不应发生（INJECT_COLLECT 已经保证 >= wait_edges+3 才进入 PROCESS）
-        exp->state = NEXT_I;
-        break;
-      }
-
-      int s_idx = exp->edge_idx[0];
-      int e_idx = exp->edge_idx[1];
-
-      // 检查样本数是否足够
-      if (e_idx <= s_idx + 1)
-      {
-        // 本次周期数据不足，重做一次采集（不计入 repeat_count）
-        exp->pos = 0;
-        exp->edge_count = 0;
-        // 重新开启注入以重试
-        exp->inj.State = true;
-        exp->last_Vd = 0.0f;
-        exp->last_Vq = 0.0f;
-        exp->state = INJECT_COLLECT;
-        break;
-      }
-
-      if (exp->inj.mode == INJECT_D || exp->inj.mode == INJECT_Q)
-      {
-        // 选择要用的 psi 缓冲区：Q 注入用 psi_q，否则使用 psi_d（如果需要同时计算可再扩展）
-        float* psi_buf = (exp->inj.mode == INJECT_Q) ? exp->psi_q_buf : exp->psi_d_buf;
-
-        // ---- 计算去均值后的最大 psi ----
-        float sum = 0.0f;
-        int cnt = 0;
-        for (int i = s_idx; i < e_idx; ++i)
-        {
-          sum += psi_buf[i];
-          cnt++;
-        }
-        float mean = (cnt > 0) ? (sum / (float)cnt) : 0.0f;
-
-        float max_psi = -1e30f;
-        float I_at_max = 0.0f;
-
-        for (int i = s_idx; i < e_idx; ++i)
-        {
-          float psi_c = psi_buf[i] - mean;
-          if (psi_c > max_psi)
-          {
-            max_psi = psi_c;
-            // 取磁链峰值点对应的电流
-            if (exp->inj.mode == INJECT_D)
-            {
-              I_at_max = exp->Id_buf[i];
+    if (build_cnt < MAX_POINTS){
+        build_tbl[build_cnt++] = newP;
+    }else{
+        int far_idx=-1; float maxd=-1.f;
+        for (int j=0;j<build_cnt;j++){
+            if (!build_tbl[j].is_fixed){
+                float d = fabsf(build_tbl[j].Iq - newP.Iq);
+                if (d>maxd){ maxd=d; far_idx=j; }
             }
-            else if (exp->inj.mode == INJECT_Q)
-            {
-              I_at_max = exp->Iq_buf[i];
+        }
+        if (far_idx>=0) build_tbl[far_idx]=newP;
+    }
+    // 冒泡排序（仍然在主循环执行）
+    for (int i=0;i<build_cnt-1;i++){
+        for (int j=0;j<build_cnt-1-i;j++){
+            if (build_tbl[j].Iq > build_tbl[j+1].Iq){
+                MTPA_Point t = build_tbl[j]; build_tbl[j]=build_tbl[j+1]; build_tbl[j+1]=t;
             }
-          }
         }
-
-        // 如果数据有效，累积；否则重试（不计入）
-        if (max_psi > -1e29f)
-        {
-          exp->sum_max_psi += max_psi;
-          exp->sum_max_I += I_at_max;  // 新增
-          exp->repeat_count++;
-        }
-        else
-        {
-          // 无效数据，直接重试
-          exp->pos = 0;
-          exp->edge_count = 0;
-          exp->inj.State = true;
-          exp->state = INJECT_COLLECT;
-          break;
-        }
-
-        // ---- 判断是否已经达到重复次数 ----
-        if (exp->repeat_count < exp->repeat_times)
-        {
-          // 还需重复：为下一次注入做准备
-          exp->pos = 0;
-          exp->edge_count = 0;
-          exp->inj.State = true;  // 重新开启注入
-          exp->state = INJECT_COLLECT;
-        }
-        else
-        {
-          // 达到重复次数：计算平均并保存结果
-          float avg_psi = exp->sum_max_psi / (float)exp->repeat_times;
-          float avg_I = exp->sum_max_I / (float)exp->repeat_times;
-
-          exp->results[exp->step_index].Imax_value = avg_I;     // 现在是峰值点对应的电流
-          exp->results[exp->step_index].avg_max_psi = avg_psi;  // 峰值点磁链
-          exp->results[exp->step_index].cycles_used = exp->repeat_times;
-          // 若你同时使用 save_result，也可以调用：
-          save_result(avg_I, avg_psi, exp->repeat_times);
-
-          exp->step_index++;
-
-          // 清零累积器，为下一 Imax 做准备（NEXT_I 也会重置 pos/edge_count）
-          exp->sum_max_psi = 0.0F;
-          exp->sum_max_I = 0.0F;
-          exp->repeat_count = 0;
-
-          exp->state = NEXT_I;
-        }
-      }
-      else if (exp->inj.mode == INJECT_DQ)
-      {
-        // DQ 轴同时计算
-        float* psi_buf_d = exp->psi_d_buf;
-        float* psi_buf_q = exp->psi_q_buf;
-
-        // 计算 d 轴均值
-        float sum_d = 0.0f;
-        int cnt_d = 0;
-        for (int i = s_idx; i < e_idx; ++i)
-        {
-          sum_d += psi_buf_d[i];
-          cnt_d++;
-        }
-        float mean_d = (cnt_d > 0) ? (sum_d / (float)cnt_d) : 0.0f;
-
-        // 计算 q 轴均值
-        float sum_q = 0.0f;
-        int cnt_q = 0;
-        for (int i = s_idx; i < e_idx; ++i)
-        {
-          sum_q += psi_buf_q[i];
-          cnt_q++;
-        }
-        float mean_q = (cnt_q > 0) ? (sum_q / (float)cnt_q) : 0.0f;
-
-        for (int i = s_idx; i < e_idx; ++i)
-        {
-          psi_buf_d[i] -= mean_d;
-
-          psi_buf_q[i] -= mean_q;
-        }
-        process_cycle_for_dq_adq(exp, S);
-        // ---- 判断是否已经达到重复次数 ----
-        if (exp->repeat_count < exp->repeat_times)
-        {
-          // 还需重复：为下一次注入做准备
-          exp->pos = 0;
-          exp->edge_count = 0;
-          exp->inj.State = true;  // 重新开启注入
-          exp->state = INJECT_COLLECT;
-        }
-        else
-        {
-          exp->inj.State = false;
-          exp->state = LLS;
-        }
-      }
-      break;
     }
-    case NEXT_I:
-    {
-      int curI = (int)exp->inj.Imax;
-      int newI = 0;
-
-      if (exp->step_index == 0)
-      {
-        // 第一次，直接跳到 start_I
-        newI = exp->start_I;
-      }
-      else
-      {
-        // 后续按 step_dir 增减
-        newI = curI + exp->step_dir;
-      }
-
-      // 检查是否超出范围
-      bool finished = false;
-      if (exp->step_dir < 0)
-      {
-        if (newI < exp->final_I) finished = true;
-      }
-      else
-      {
-        if (newI > exp->final_I) finished = true;
-      }
-
-      if (finished || exp->step_index >= exp->max_steps)
-      {
-        exp->inj.State = false;
-        exp->state = LLS;
-      }
-      else
-      {
-        exp->inj.Imax = (float)newI;
-        exp->pos = 0;
-        exp->edge_count = 0;
-        exp->state = INJECT_COLLECT;
-        // exp->inj.State = true;
-      }
-      break;
-    }
-
-    case LLS:
-    {
-      uint8_t X = 0;
-      LLS_Result_t lls;
-      if (exp->inj.mode == INJECT_D)
-      {
-        X = 5;
-        lls = Single_Axis_LLS(exp, X);  // X=5
-        g_results_ad0 = lls.ad0;
-        g_results_add = lls.add;
-        exp->LLS.ad0 = lls.ad0;
-        exp->LLS.add = lls.add;
-      }
-      if (exp->inj.mode == INJECT_Q)
-      {
-        X = 1;
-        lls = Single_Axis_LLS(exp, X);  // X=1
-        g_results_aq0 = lls.aq0;
-        g_results_aqq = lls.aqq;
-        exp->LLS.aq0 = lls.aq0;
-        exp->LLS.aqq = lls.aqq;
-      }
-      if (exp->inj.mode == INJECT_DQ)
-      {
-        float adq = 0.0f;
-        if (exp->cq_Sxx > 1e-12f)
-        {
-          adq = exp->cq_Sxy / exp->cq_Sxx;
-        }
-        else
-        {
-          adq = -1.0f;  // 或标记失败 / 正则化
-        }
-
-        // J (残差平方和)
-        float Jd = exp->sum_eps_id2;
-        float Jq = exp->sum_eps_iq2;
-
-        // 计算 R^2
-
-        float SST_id =
-            exp->sum_id2 - (exp->sum_id * exp->sum_id) / (float)exp->count_id;  // sum (id - mean)^2
-        float R2_d = (SST_id > 0.0f) ? (1.0f - Jd / SST_id) : 0.0f;
-
-        float SST_iq = exp->sum_iq2 - (exp->sum_iq * exp->sum_iq) / (float)exp->count_iq;
-        float R2_q = (SST_iq > 0.0f) ? (1.0f - Jq / SST_iq) : 0.0f;
-
-        exp->LLS.adq = adq;
-        exp->LLS.DQ.J[0] = Jd;
-        exp->LLS.DQ.J[1] = Jq;
-        exp->LLS.DQ.R2[0] = R2_d;
-        exp->LLS.DQ.R2[1] = R2_q;
-      }
-
-      exp->state = PENDING;
-      break;
-    }
-    case PENDING:
-    {
-      // 初始化方波注入器
-      exp->inj.Ud_amp = 0.0F;
-      exp->inj.Uq_amp = 0.0F;
-      exp->inj.Imax = 0.0F;
-      exp->inj.State = false;
-      exp->inj.inj_state_d = 0;
-      exp->inj.inj_state_q = 0;
-      exp->pos = 0;
-      exp->edge_count = 0;
-      exp->last_Vd = 0.0f;
-      exp->last_Vq = 0.0f;
-      exp->step_index = 0;
-      if (exp->inj.mode == INJECT_D)
-      {
-        exp->inj.mode = INJECT_Q;
-        exp->state = PROCESS;
-      }
-      else if (exp->inj.mode == INJECT_Q)
-      {
-        exp->inj.mode = INJECT_DQ;
-        exp->state = PROCESS;
-      }
-      else if (exp->inj.mode == INJECT_DQ)
-      {
-        exp->inj.mode = INJECT_D;
-        exp->state = DONE;
-      }
-      break;
-    }
-    case DONE:
-    {
-      *Ud = 0.0f;
-      *Uq = 0.0f;
-      exp->Running = false;
-      break;
-    }
-  }
 }
 
-static bool Estimate_Rs(float Current, float* Voltage_out, float* Rs)
+
+
+// ==================== MTPA 更新函数 (带稳定性检测) ====================
+/*void MTPA_update(float Iq_meas) 
 {
-  static float V_last = 0.0F, I_last = 0.0F;
-  static float V_now = 1.0F;
-  static float Rs_last = 0.0F;
-  static float Rs_new = 0.0F;
-  static uint16_t hold = 0;
-  static uint8_t est_step = 0;
-  static bool first = true;
-  static uint8_t done_flag = 0;
-  static float I_filtered = 0.0F;  // 新增：滤波后的电流 //
-  I_filtered = CURRENT_FILTER_ALPHA * Current +
-               (1.0F - CURRENT_FILTER_ALPHA) * I_filtered;  // 如果已完成，直接输出V=0并返回true
-  if (done_flag)
-  {
-    V_now = 0.0F;
-    *Voltage_out = V_now;
-    *Rs = Rs_new;
-    return true;
-  }
-  *Voltage_out = V_now;
-  if (hold < HOLD_CYCLES)
-  {
-    hold++;
-  }
-  else
-  {
-    hold = 0;
-    if (first)
-    {
-      V_last = V_now;
-      I_last = I_filtered;  // 用滤波后的电流 V_now += 1.0f;
-      first = false;
-      V_now += VOLTAGE_STEP;
+    // 1. 电流稳定性检测
+    if (fabs(Iq_meas - last_Iq_meas) < DELTA_STABLE) {
+        stable_counter++;
+    } 
+    else {
+        stable_counter = 0;
     }
-    else
-    {
-      float delta_I = I_filtered - I_last;
-      if (fabsf(delta_I) < 1e-4f)
-      {
-        first = true;
-        est_step = 0;
-      }
-      else
-      {
-        Rs_new = (V_now - V_last) / delta_I;
-        float I_predict = I_last + (VOLTAGE_STEP / Rs_new);
-        if ((fabsf(Rs_new - Rs_last) < RS_THRESHOLD && est_step > 0) &&
-            (fabsf(I_filtered) >= CURRENT_LIMIT * CURRENT_RATIO))
-        {
-          *Rs = Rs_new;
-          first = true;
-          est_step = 0;
-          done_flag = 1;
-        }
-        else if (fabsf(I_filtered) > CURRENT_LIMIT)
-        {
-          *Rs = Rs_new;
-          first = true;
-          est_step = 0;
-          done_flag = 2;
-          *Voltage_out = 0.0F;
-        }
-        else if (++est_step > MAX_STEPS)
-        {
-          *Rs = Rs_new;
-          first = true;
-          est_step = 0;
-          done_flag = 4;
-          *Voltage_out = 0.0F;
-        }
-        else
-        {  // 只有预计电流不会超限时才步进
-          if (fabsf(I_predict) < CURRENT_LIMIT * CURRENT_RATIO)
-          {
-            V_last = V_now;
-            I_last = I_filtered;
-            Rs_last = Rs_new;
-            V_now += VOLTAGE_STEP;
-            *Voltage_out = V_now;
-          }
-        }
-      }
-    }
-  }
-  return done_flag;
-}
+    last_Iq_meas = Iq_meas;
 
-LLS_Result_t Single_Axis_LLS(FluxExperiment_t* exp, int exponent)
+   
+    // 2. 遍历查找 Iq 所在的区间
+    for (int i = 0; i < point_count - 1; i++) {
+        if (Iq_meas >= MTPA_table[i].Iq && Iq_meas <= MTPA_table[i + 1].Iq) {
+            float psi_left  = MTPA_table[i].Psi_s;
+            float psi_right = MTPA_table[i + 1].Psi_s;
+            float alpha = 0.5; // 低通滤波系数
+            float mtpa_ratio = (Iq_meas - MTPA_table[i].Iq) / (MTPA_table[i+1].Iq - MTPA_table[i].Iq);
+            float Id_mtpa_new  = MTPA_table[i].Id + mtpa_ratio * (MTPA_table[i+1].Id - MTPA_table[i].Id);// 线性插值
+            static float Id_mtpa_old = 0.0f;
+            Id_mtpa = alpha * Id_mtpa_new + (1 - alpha) * Id_mtpa_old;
+            Id_mtpa_old = Id_mtpa;
+            if (stable_counter < STABLE_COUNT) 
+            {
+            return; // 电流未稳定，不更新
+            }
+            // 区间过小，认为收敛
+            if (fabs(MTPA_table[i + 1].Iq -MTPA_table[i].Iq ) < DELTA_I) {
+                return;
+            }
+            if (fabs(MTPA_table[i].Iq - Iq_meas) < delta_iq ||
+                fabs(MTPA_table[i + 1].Iq - Iq_meas) < delta_iq)
+            {
+                return;
+            } 
+            
+            stable_counter = 0; // 重置计数器
+
+            // 二分：取中点 Psi
+            float psi_mid = 0.5 * (psi_left + psi_right);
+            MTPA_Point newP = calc_MTPA_point(psi_mid);
+
+            // 如果新点 Iq 已经和测量 Iq 接近，认为收敛
+           
+
+            // 插入新点
+            insert_point(newP);
+            return;
+        }
+    }
+}*/
+
+// ==================== 初始化三点表 ====================
+
+void MTPA_init(float psi_min,float psi_1,float psi_2,float psi_3, float psi_mid,float psi_4,float psi_5, float psi_6,float psi_7,float psi_8,float psi_9, float psi_max) 
 {
-  float sum_x2 = 0.0f;
-  float sum_xp = 0.0f;
-  float sum_xp2 = 0.0f;
-  float sum_yx = 0.0f;
-  float sum_yxp = 0.0f;
-  int N = exp->step_index;
-
-  for (int i = 0; i < N; i++)
-  {
-    float psi = exp->results[i].avg_max_psi;
-    float I = exp->results[i].Imax_value;
-
-    // 幂次计算：psi^(S+1)
-    float xp = 1.0f;
-    for (int k = 0; k < exponent + 1; k++)
-    {
-      xp *= psi;
-    }
-
-    sum_x2 += psi * psi;
-    sum_xp += psi * xp;
-    sum_xp2 += xp * xp;
-
-    sum_yx += psi * I;
-    sum_yxp += xp * I;
-  }
-
-  float det = sum_x2 * sum_xp2 - sum_xp * sum_xp;
-  LLS_Result_t res = {0};
-
-  if (fabsf(det) > 1e-12f)
-  {
-    if (exp->inj.mode == INJECT_D)
-    {
-      res.ad0 = (sum_xp2 * sum_yx - sum_xp * sum_yxp) / det;
-      res.add = (sum_x2 * sum_yxp - sum_xp * sum_yx) / det;
-    }
-    else if (exp->inj.mode == INJECT_Q)
-    {
-      res.aq0 = (sum_xp2 * sum_yx - sum_xp * sum_yxp) / det;
-      res.aqq = (sum_x2 * sum_yxp - sum_xp * sum_yx) / det;
-    }
-  }
-
-  return res;
+   /* MTPA_table[0] = calc_MTPA_point(psi_min); MTPA_table[0].is_fixed = true;
+    MTPA_table[1] = calc_MTPA_point(psi_1); MTPA_table[1].is_fixed = true;
+    MTPA_table[2] = calc_MTPA_point(psi_2); MTPA_table[2].is_fixed = true;
+    MTPA_table[3] = calc_MTPA_point(psi_3); MTPA_table[3].is_fixed = true;
+    MTPA_table[4] = calc_MTPA_point(psi_mid); MTPA_table[4].is_fixed = true;
+    MTPA_table[5] = calc_MTPA_point(psi_4); MTPA_table[5].is_fixed = true;
+    MTPA_table[6] = calc_MTPA_point(psi_5); MTPA_table[6].is_fixed = true;
+    MTPA_table[7] = calc_MTPA_point(psi_max); MTPA_table[7].is_fixed = true;
+    point_count = 8;*/
+     float psis[12]={psi_min,psi_1,psi_2,psi_3,psi_mid,psi_4,psi_5,psi_6,psi_7,psi_8,psi_9,psi_max};
+    build_cnt = 0;
+    for(int k=0;k<12;k++){ MTPA_Point p = calc_MTPA_point(psis[k]); p.is_fixed=1; insert_point_on_build(p); }
+    mtpa_publish_from_main();   // 活动表就绪
 }
+/*** —— 中断读取时的简易插值（只读 active 表） —— ***/
+ void interp_IdIq_by_Iq(const MTPA_Point *T, int N, float iq_meas, float *Id_ref, float *Iq_ref){
+    if (N<2){ *Id_ref=0; *Iq_ref=iq_meas; return; }
+    int i = 0;
+    for (i=0;i<N-1;i++) if (iq_meas>=T[i].Iq && iq_meas<=T[i+1].Iq) break;
+    if (i>=N-1) i=N-2;
+    float w = (iq_meas - T[i].Iq) / (T[i+1].Iq - T[i].Iq + 1e-9f);
+    *Id_ref = T[i].Id + w*(T[i+1].Id - T[i].Id);
+    *Iq_ref = iq_meas; // 或者也插值Iq
+}
+    
+extern MTPA_Point *active_tbl; extern int active_cnt;
+extern MTPA_Point *build_tbl;  extern int build_cnt;
+extern void mtpa_publish_from_main(void);
+extern void insert_point_on_build(MTPA_Point p);
 
-void process_cycle_for_dq_adq(FluxExperiment_t* exp, int s)
+
+
+void MTPA_service_tick(void)
 {
-  for (int i = exp->edge_idx[0]; i < exp->edge_idx[1]; ++i)
-  {
-    float id_s = exp->Id_buf[i];
-    float iq_s = exp->Iq_buf[i];
-    float psi_d = exp->psi_d_buf[i];
-    float psi_q = exp->psi_q_buf[i];
+    if (!mtpa_req_pending) return;
 
-    // only positive quadrant
-    if (!(id_s > 0.0F && iq_s > 0.0F && psi_d > 0.0F && psi_q > 0.0F)) continue;
+    // 取出请求并清零（不关中断，先读内容再清标志）
+    float psi_mid = mtpa_req_mb.psi_mid;
+    __THREAD_FENCE(); mtpa_req_pending = 0;
 
-    // compute psi^powers efficiently
-    float psi_d_S1 = 1.0F;
-    for (int k = 0; k < s + 1; ++k) psi_d_S1 *= psi_d;  // psi_d^(S+1)
-    float psi_q_T1 = 1.0F;
-    for (int k = 0; k < T + 1; ++k) psi_q_T1 *= psi_q;  // psi_q^(T+1)
+    // 第一次进入时，把 active 拷到 build（只需做一次）
+    static int cloned = 0;
+    if (!cloned){ for(int i=0;i<active_cnt;i++) build_tbl[i]=active_tbl[i];
+                  build_cnt = active_cnt; cloned = 1; }
 
-    float id_pred = exp->LLS.ad0 * psi_d + exp->LLS.add * psi_d_S1;
-    float iq_pred = exp->LLS.aq0 * psi_q + exp->LLS.aqq * psi_q_T1;
+    // —— 主循环里“重活”：黄金分割 & 新点插入（冒泡排序保留） ——
+    MTPA_Point newP = calc_MTPA_point(psi_mid);
+    insert_point_on_build(newP);
 
-    float id_res = id_s - id_pred;
-    float iq_res = iq_s - iq_pred;
-
-    // x1 and x2
-    float psi_d_U1 = 1.0F;
-    for (int k = 0; k < U + 1; ++k) psi_d_U1 *= psi_d;  // psi_d^(U+1)
-    float psi_d_U2 = psi_d_U1 * psi_d;                  // psi_d^(U+2)
-    float psi_q_V1 = 1.0F;
-    for (int k = 0; k < V + 1; ++k) psi_q_V1 *= psi_q;  // psi_q^(V+1)
-    float psi_q_V2 = psi_q_V1 * psi_q;                  // psi_q^(V+2)
-
-    float x1 = (psi_d_U1 * psi_q_V2) / (float)(V + 2);
-    float x2 = (psi_d_U2 * psi_q_V1) / (float)(U + 2);
-
-    // accumulate Sxx, Sxy
-    exp->cq_Sxx += x1 * x1 + x2 * x2;
-    exp->cq_Sxy += x1 * id_res + x2 * iq_res;
-
-    // accumulate sums for R2
-    exp->sum_id += id_s;
-    exp->sum_id2 += id_s * id_s;
-    exp->count_id++;
-    exp->sum_iq += iq_s;
-    exp->sum_iq2 += iq_s * iq_s;
-    exp->count_iq++;
-
-    // residual sums
-    exp->sum_eps_id2 += id_res * id_res;
-    exp->sum_eps_iq2 += iq_res * iq_res;
-  }
+    // —— 发布：把 build 切成 active（不关中断） ——
+    mtpa_publish_from_main();
 }
+void MTPA_update_ISR(float Iq_meas)
+{
+    static int send_cooldown = 0;
+    const int SEND_INTERVAL = 200; // 调用间隔，可根据实际调整
+    // 取活动表的快照（不关中断）
+    MTPA_Point *T = {0}; int N = 0; mtpa_snapshot_for_isr(&T, &N);
+    if (N < 2) return;
+
+    // 稳定性检测（照旧）
+    if (fabsf(Iq_meas - last_Iq_meas) < DELTA_STABLE) stable_counter++; else stable_counter=0;
+    last_Iq_meas = Iq_meas;
+
+    // 遍历查找 Iq 区间（照旧）
+    for (int i = 0; i < N - 1; i++) {
+        if (Iq_meas >= T[i].Iq && Iq_meas <= T[i + 1].Iq) {
+
+            // 线性插值 Id_mtpa（照旧）
+            float w = (Iq_meas - T[i].Iq) / (T[i+1].Iq - T[i].Iq + 1e-9f);
+            float Id_mtpa_new = T[i].Id + w * (T[i+1].Id - T[i].Id);
+            static float Id_mtpa_old = 0.f;
+            float alpha = 0.25f;
+            Id_mtpa = alpha*Id_mtpa_new + (1-alpha)*Id_mtpa_old;
+            Id_mtpa_old = Id_mtpa;
+
+            // 早退条件（照旧）
+            if (stable_counter < STABLE_COUNT) return;
+            if (fabsf(T[i+1].Iq - T[i].Iq) < DELTA_I) return;
+            if (fabsf(T[i].Iq - Iq_meas) < delta_iq ||fabsf(T[i+1].Iq - Iq_meas) < delta_iq) return;
+            // 间隔控制，禁止连续发指令
+            if (send_cooldown > 0) {
+                send_cooldown--;
+                return;
+            }
+            send_cooldown = SEND_INTERVAL;
+
+            // —— 只“发指令”，不做计算 —— 
+            float psi_mid = 0.5f * (T[i].Psi_s + T[i+1].Psi_s);
+            if (!mtpa_req_pending) { post_req_from_isr(psi_mid, Iq_meas); }
+            stable_counter = 0;
+            return;
+        }
+    }
+}
+// 简单邮箱（单生产者=ISR，单消费者=主循环）
+
+volatile int mtpa_req_pending = 0;
+
+
+void post_req_from_isr(float psi_mid, float iq_meas){
+    mtpa_req_mb.psi_mid = psi_mid;
+    mtpa_req_mb.iq_meas = iq_meas;
+    __THREAD_FENCE(); mtpa_req_pending = 1;   // 保证先写内容再置位
+}
+
+extern void mtpa_snapshot_for_isr(MTPA_Point **t, int *n);   // 来自 MTPA_table.c
+extern void interp_IdIq_by_Iq(const MTPA_Point *T, int N, float iq_meas, float *Id_ref, float *Iq_ref);
