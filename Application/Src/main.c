@@ -55,10 +55,10 @@ int main(void)
   float psi_5 = 0.5;   // 第五个磁链幅值 (Wb)
   float psi_6 = 0.55;  // 第五个磁链幅值 (Wb)
   float psi_7 = 0.6; 
-  float psi_8 = 0.68; 
-  float psi_9 = 0.74; 
+  float psi_8 = 0.7; 
+  float psi_9 = 0.8; 
 
-  float psi_max = 0.84; // 最大磁链幅值 (Wb  );
+  float psi_max = 0.9; // 最大磁链幅值 (Wb  );
   MTPA_init( psi_min, psi_1, psi_2, psi_3,  psi_mid, psi_4, psi_5,psi_6 ,psi_7 ,psi_8 ,psi_9, psi_max);//
 
   while (1)

@@ -213,7 +213,7 @@ void ADC0_1_IRQHandler(void)
     FOC_Main();
     float DMA_Buffer[5];
         DMA_Buffer[0] = FOC.Ia;
-        DMA_Buffer[1] = FOC.Ud_ref;
+        DMA_Buffer[1] = FOC.Speed;
         DMA_Buffer[2] = FOC.Uq_ref;
         DMA_Buffer[3] = FOC.Id;
         DMA_Buffer[4] = FOC.Iq;

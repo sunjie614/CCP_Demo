@@ -167,7 +167,7 @@ static inline void mtpa_snapshot_for_isr(MTPA_Point **t, int *n){
 }
 
 /*** 主循环发布（不关中断） ***/
-static inline void mtpa_publish_from_main(void){
+ void mtpa_publish_from_main(void){
     mtpa_seq++; __THREAD_FENCE();                 // 进入发布（奇数）
     active_tbl = build_tbl; active_cnt = build_cnt;
     __THREAD_FENCE(); mtpa_seq++; 
@@ -260,7 +260,7 @@ static void insert_point_on_build(MTPA_Point newP)
     }
 }*/
 
-// ==================== 初始化三点表 ====================
+// ==================== 初始化表 ====================
 
 void MTPA_init(float psi_min,float psi_1,float psi_2,float psi_3, float psi_mid,float psi_4,float psi_5, float psi_6,float psi_7,float psi_8,float psi_9, float psi_max) 
 {
@@ -291,9 +291,9 @@ void MTPA_init(float psi_min,float psi_1,float psi_2,float psi_3, float psi_mid,
     
 extern MTPA_Point *active_tbl; extern int active_cnt;
 extern MTPA_Point *build_tbl;  extern int build_cnt;
-extern void mtpa_publish_from_main(void);
-extern void insert_point_on_build(MTPA_Point p);
 
+extern void insert_point_on_build(MTPA_Point p);
+volatile int  mtpa_publish_pending = 0;
 
 
 void MTPA_service_tick(void)
@@ -309,12 +309,13 @@ void MTPA_service_tick(void)
     if (!cloned){ for(int i=0;i<active_cnt;i++) build_tbl[i]=active_tbl[i];
                   build_cnt = active_cnt; cloned = 1; }
 
-    // —— 主循环里“重活”：黄金分割 & 新点插入（冒泡排序保留） ——
+    // —— 主循环里：黄金分割 & 新点插入（冒泡排序保留） ——
     MTPA_Point newP = calc_MTPA_point(psi_mid);
     insert_point_on_build(newP);
 
-    // —— 发布：把 build 切成 active（不关中断） ——
-    mtpa_publish_from_main();
+    // —— 发布标志 ——
+    //mtpa_publish_from_main();
+    mtpa_publish_pending = 1;
 }
 void MTPA_update_ISR(float Iq_meas)
 {
@@ -324,15 +325,15 @@ void MTPA_update_ISR(float Iq_meas)
     MTPA_Point *T = {0}; int N = 0; mtpa_snapshot_for_isr(&T, &N);
     if (N < 2) return;
 
-    // 稳定性检测（照旧）
+    // 稳定性检测
     if (fabsf(Iq_meas - last_Iq_meas) < DELTA_STABLE) stable_counter++; else stable_counter=0;
     last_Iq_meas = Iq_meas;
 
-    // 遍历查找 Iq 区间（照旧）
+    // 遍历查找 Iq 区间
     for (int i = 0; i < N - 1; i++) {
         if (Iq_meas >= T[i].Iq && Iq_meas <= T[i + 1].Iq) {
 
-            // 线性插值 Id_mtpa（照旧）
+            // 线性插值 Id_mtpa
             float w = (Iq_meas - T[i].Iq) / (T[i+1].Iq - T[i].Iq + 1e-9f);
             float Id_mtpa_new = T[i].Id + w * (T[i+1].Id - T[i].Id);
             static float Id_mtpa_old = 0.f;
@@ -340,7 +341,7 @@ void MTPA_update_ISR(float Iq_meas)
             Id_mtpa = alpha*Id_mtpa_new + (1-alpha)*Id_mtpa_old;
             Id_mtpa_old = Id_mtpa;
 
-            // 早退条件（照旧）
+            // 早退条件
             if (stable_counter < STABLE_COUNT) return;
             if (fabsf(T[i+1].Iq - T[i].Iq) < DELTA_I) return;
             if (fabsf(T[i].Iq - Iq_meas) < delta_iq ||fabsf(T[i+1].Iq - Iq_meas) < delta_iq) return;

@@ -108,19 +108,39 @@ void FOC_Main(void)
       }
 
       FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
-     // FOC.Id_ref = ((MTPA.A * FOC.Iq_ref + MTPA.B) * FOC.Iq_ref + MTPA.C) * FOC.Iq_ref + MTPA.D;
-      float iq_meas = FOC.Iq_ref ;
-     if (FOC.Iq_ref>=0)
-        {
-        MTPA_update_ISR(iq_meas);
-        FOC.Id_ref = Id_mtpa;
-        }
-        else
-        {
-          MTPA_update_ISR(-iq_meas);
-          FOC.Id_ref = Id_mtpa;
-        }
+      if(FOC.Iq_ref>0)
+      {float x1=FOC.Iq_ref;
+      float x2=x1*x1;
+      float x3=x2*x1;float x4=x3*x1;
+      FOC.Id_ref = -0.000005113*x4+ 0.00056307*x3-0.022613*x2+0.74113*x1+0.58913; // MTPA
+      }
+      else
+      {float x1=-FOC.Iq_ref;
+      float x2=x1*x1; float x3=x2*x1;float x4=x3*x1;
+      FOC.Id_ref = -0.000005113*x4+ 0.00056307*x3-0.022613*x2+0.74113*x1+0.58913; // MTPA
+      }
+      
+     if(mtpa_publish_pending)
+     {
+         mtpa_publish_pending=0;
+         mtpa_publish_from_main();
+     }
+    //   float iq_meas = FOC.Iq_ref ;
+    //  if (FOC.Iq_ref>=0)
+    //     {
+    //     MTPA_update_ISR(iq_meas);
+    //     FOC.Id_ref = Id_mtpa;
+    //     }
+    //     else
+    //     {
+    //       MTPA_update_ISR(-iq_meas);
+    //       FOC.Id_ref = Id_mtpa;
+    //     }
       // FOC.Id_ref = IQtest;
+      // if(FOC.Iq_ref>0)
+      //   {FOC.Id_ref =FOC.Iq_ref;} // 限制 Id_ref <= 0
+      // else 
+      //   {FOC.Id_ref = -FOC.Iq_ref;}
 
       PID_Controller(FOC.Id_ref, FOC.Id, &Id_PID);
       PID_Controller(FOC.Iq_ref, FOC.Iq, &Iq_PID);
@@ -214,8 +234,8 @@ void Parameter_Init(void)
 #ifdef Encoder_Position
   theta_factor = M_2PI / (float)(Motor.Position_Scale + 1);
 #endif
-  Speed_PID.Kp = 0.003F;
-  Speed_PID.Ki = 0.001F;
+  Speed_PID.Kp = 0.019F;
+  Speed_PID.Ki = 0.06F;
   Speed_PID.Kd = 0.0F;
   Speed_PID.MaxOutput = 0.7F * FOC.I_Max;  // Maximum Iq
   Speed_PID.MinOutput = -0.7F * FOC.I_Max;
@@ -235,9 +255,9 @@ void Parameter_Init(void)
   Id_PID.Kp = 73.8274273F;
   Id_PID.Ki = 408.40704496F;
   Id_PID.Kd = 0.0F;
-  Id_PID.MaxOutput = 150.0F;  // Maximum Udc/sqrt(3)
-  Id_PID.MinOutput = -150.0F;
-  Id_PID.IntegralLimit = 150.0F;
+  Id_PID.MaxOutput = 300.0F;  // Maximum Udc/sqrt(3)
+  Id_PID.MinOutput = -300.0F;
+  Id_PID.IntegralLimit = 300.0F;
   Id_PID.previous_error = 0.0F;
   Id_PID.integral = 0.0F;
   Id_PID.output = 0.0F;
@@ -246,9 +266,9 @@ void Parameter_Init(void)
   Iq_PID.Kp = 27.646015F;
   Iq_PID.Ki = 408.40704496F;
   Iq_PID.Kd = 0.0F;
-  Iq_PID.MaxOutput = 150.0F;
-  Iq_PID.MinOutput = -150.0F;
-  Iq_PID.IntegralLimit = 150.0F;
+  Iq_PID.MaxOutput = 300.0F;
+  Iq_PID.MinOutput = -300.0F;
+  Iq_PID.IntegralLimit = 300.0F;
   Iq_PID.previous_error = 0.0F;
   Iq_PID.integral = 0.0F;
   Iq_PID.output = 0.0F;

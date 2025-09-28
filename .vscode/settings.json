@@ -99,6 +99,7 @@
         "mtpa.h": "c",
         "position_sensor.h": "c",
         "hardware_interface.h": "c",
-        "stdint.h": "c"
+        "stdint.h": "c",
+        "arm_math.h": "c"
     },
 }

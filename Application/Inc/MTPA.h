@@ -31,13 +31,13 @@ extern MTPA_Point MTPA_table[MAX_POINTS];
 extern int point_count;
 extern float Id_mtpa;
 extern volatile int mtpa_req_pending;
-
+extern volatile int  mtpa_publish_pending;
 // ==================== 对外接口 ====================
 void MTPA_init(float psi_min,float psi_1,float psi_2,float psi_3, float psi_mid,float psi_4,float psi_5, float psi_6,float psi_7,float psi_8,float psi_9, float psi_max);
 //void MTPA_update(float Iq_meas);
 /*** —— 中断↔主循环的接口 —— ***/
 void MTPA_update_ISR(float Iq_meas);
-
+extern void mtpa_publish_from_main(void);
 // 主循环侧：轮询服务（收到请求才计算），建议 100–200 Hz 调一次
 void MTPA_service_tick(void);
 
