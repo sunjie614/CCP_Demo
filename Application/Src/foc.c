@@ -108,34 +108,34 @@ void FOC_Main(void)
       }
 
       FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
-      if(FOC.Iq_ref>0)
-      {float x1=FOC.Iq_ref;
-      float x2=x1*x1;
-      float x3=x2*x1;float x4=x3*x1;
-      FOC.Id_ref = -0.000005113*x4+ 0.00056307*x3-0.022613*x2+0.74113*x1+0.58913; // MTPA
-      }
-      else
-      {float x1=-FOC.Iq_ref;
-      float x2=x1*x1; float x3=x2*x1;float x4=x3*x1;
-      FOC.Id_ref = -0.000005113*x4+ 0.00056307*x3-0.022613*x2+0.74113*x1+0.58913; // MTPA
-      }
+      // if(FOC.Iq_ref>0)
+      // {float x1=FOC.Iq_ref;
+      // float x2=x1*x1;
+      // float x3=x2*x1;float x4=x3*x1;
+      // FOC.Id_ref = -0.000005113*x4+ 0.00056307*x3-0.022613*x2+0.74113*x1+0.58913; // MTPA
+      // }
+      // else
+      // {float x1=-FOC.Iq_ref;
+      // float x2=x1*x1; float x3=x2*x1;float x4=x3*x1;
+      // FOC.Id_ref = -0.000005113*x4+ 0.00056307*x3-0.022613*x2+0.74113*x1+0.58913; // MTPA
+      // }
       
-     if(mtpa_publish_pending)
-     {
-         mtpa_publish_pending=0;
-         mtpa_publish_from_main();
-     }
-    //   float iq_meas = FOC.Iq_ref ;
-    //  if (FOC.Iq_ref>=0)
-    //     {
-    //     MTPA_update_ISR(iq_meas);
-    //     FOC.Id_ref = Id_mtpa;
-    //     }
-    //     else
-    //     {
-    //       MTPA_update_ISR(-iq_meas);
-    //       FOC.Id_ref = Id_mtpa;
-    //     }
+     float Iq_meas = FOC.Iq_ref; // 从传感器或速度环估计得到的 Iq 目标
+     float Id_mtpa;
+     float Iq_out;
+
+
+      
+     if (FOC.Iq_ref>=0)
+        {
+        MTPA_interp_by_Iq(mtpa_table, MTPA_TABLE_POINTS, Iq_meas, &Id_mtpa, &Iq_out);
+        FOC.Id_ref = Id_mtpa;
+        }
+        else
+        {
+           MTPA_interp_by_Iq(mtpa_table, MTPA_TABLE_POINTS, -Iq_meas, &Id_mtpa, &Iq_out);
+          FOC.Id_ref = Id_mtpa;
+        }
       // FOC.Id_ref = IQtest;
       // if(FOC.Iq_ref>0)
       //   {FOC.Id_ref =FOC.Iq_ref;} // 限制 Id_ref <= 0

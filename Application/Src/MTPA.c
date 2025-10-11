@@ -1,375 +1,308 @@
 #include "MTPA.h"
-
 #include <math.h>
+#include <string.h>
+#include <stdio.h>
+/*----------- 辅助宏 -----------*/
+#ifndef MIN
+  #define MIN(a,b) (((a)<(b))?(a):(b))
+#endif
+#ifndef MAX
+  #define MAX(a,b) (((a)>(b))?(a):(b))
+#endif
 
 
-typedef struct { float psi_mid; float iq_meas; } MTPA_Req;
-static MTPA_Req    mtpa_req_mb;
-  
-// ==================== 全局变量 ====================
-MTPA_Point MTPA_table[MAX_POINTS];
-int point_count = 0;
-float Id_mtpa = 0.0f;
-static float last_Iq_meas = 0.0F; // 上一次测量的 Iq
-static int stable_counter = 0;    // 稳定计数器
-
-// ==================== MTPA 求解函数(用户需实现) ====================
-
-/*float a_d = 5.59756, b_d = 5.15426, m = 5.0;
+/* ------------- 你的拟合模型参数（可以修改/从外部注入） ------------- */
+/* 与用户给定参数一致 */
+// extern  float a_d = 6.019F, b_d = 4.3238F, m = 5.0F;
+// float a_q = 10.524F, b_q = 128.6657F, n = 1.0F;
+// float c_coeff = 62.6F, h = 1.0F, j = 0.0F;
+extern MTPA_Point mtpa_table[MTPA_TABLE_POINTS]= {0};
+float a_d = 5.59756, b_d = 5.15426, m = 5.0;
 float a_q = 6.306, b_q = 171.571, n = 1.0;
-float c_coeff = 35.90, h = 1.0, j = 0.0;*/
-extern  float a_d = 6.019F, b_d = 4.3238F, m = 5.0F;
-float a_q = 10.524F, b_q = 128.6657F, n = 1.0F;
-float c_coeff = 62.6F, h = 1.0F, j = 0.0F;
+float c_coeff = 35.90, h = 1.0, j = 0.0;
 
-// ---------- 电流模型 (ψd, ψq → id, iq) ----------
-float calc_id(float psi_d, float psi_q) {
-    float term = a_d + b_d * powf(fabsf(psi_d), m)
-                + (c_coeff / (j + 2.0F)) * powf(fabsf(psi_d), h) * powf(fabsf(psi_q), j + 2.0F);
-    return term * psi_d;
+/* -------------- 模型实现： psi_d, psi_q -> id, iq -------------- */
+/* 使用题主给定的模型（包含绝对值次幂项） */
+void MTPA_model_idiq(float psi_d, float psi_q, float *id, float *iq)
+{
+    /* term_d = a_d + b_d * |psi_d|^m + (c/(j+2)) * |psi_d|^h * |psi_q|^(j+2) */
+    float abs_pd = fabsf(psi_d);
+    float abs_pq = fabsf(psi_q);
+
+    float term_d = a_d + b_d * powf(abs_pd, m);
+    term_d += (c_coeff / (j + 2.0f)) * powf(abs_pd, h) * powf(abs_pq, j + 2.0f);
+
+    float term_q = a_q + b_q * powf(abs_pq, n);
+    term_q += (c_coeff / (h + 2.0f)) * powf(abs_pq, j) * powf(abs_pd, h + 2.0f);
+
+    *id = term_d * psi_d;
+    *iq = term_q * psi_q;
 }
 
-float calc_iq(float psi_d, float psi_q) {
-    float term = a_q + b_q * powf(fabsf(psi_q), n)
-                + (c_coeff / (h + 2.0F)) * powf(fabsf(psi_q), j) * powf(fabsf(psi_d), h + 2.0F);
-    return term * psi_q;
+/* -------------- 转矩计算 -------------- */
+float MTPA_calc_torque(float psi_d, float psi_q, float id, float iq)
+{
+    /* Te = (3/2) * p * (psi_d * iq - psi_q * id) */
+    return KAPPA * (psi_d * iq - psi_q * id);
 }
 
-// ---------- 转矩计算 ----------
-float calc_torque(float psi_d, float psi_q, float id, float iq) {
-    return 1.5F * POLE_PAIRS * (psi_d * iq - psi_q * id);
+/* -------------- 内层：给定 (psi, gamma) 计算 Te 和 Id,Iq,Is -------------- */
+static void compute_at_psi_gamma(float psi, float gamma, float *Te, float *Id, float *Iq, float *Is)
+{
+    float psi_d = psi * cosf(gamma);
+    float psi_q = psi * sinf(gamma);
+    float id_local, iq_local;
+    MTPA_model_idiq(psi_d, psi_q, &id_local, &iq_local);
+    float Te_local = MTPA_calc_torque(psi_d, psi_q, id_local, iq_local);
+    float Is_local = sqrtf(id_local * id_local + iq_local * iq_local);
+    if (Id) *Id = id_local;
+    if (Iq) *Iq = iq_local;
+    if (Te) *Te = Te_local;
+    if (Is) *Is = Is_local;
 }
 
-// ---------- 目标函数 J = T / Is ----------
-float objective(float psi, float theta) {
-    float psi_d = psi * COS(theta);
-    float psi_q = psi * SIN(theta);
+/* -------------- 内环求 Psi（在固定 gamma 下），返回最小 Psi 使 Te >= T_req -------------- */
+/* 方法：
+   1) 在 [Psi_min=0, Psi_max] 上均匀采样 MTPA_PSI_SCAN_STEPS 个点，寻找第一个采样区间
+      (psi_k, psi_k+1) 使 Te(psi_k) < T <= Te(psi_k+1)；
+   2) 若在整个区间 Te(max) < T => 无解（不可行）；
+   3) 对找到的区间用二分法求解精确的 psi_root（直到误差/步长满足 MTPA_PSI_BISECT_TOL）。
+   返回：true 表示找到根，并把结果放到 out_psi / out_Id / out_Iq / out_Te / out_Is。
+*/
+static bool find_psi_for_T_at_gamma(float T_req, float gamma,
+                                    float *out_psi, float *out_Id, float *out_Iq, float *out_Te, float *out_Is)
+{
+    const float psi_min = MTPA_PSI_MIN;
+    const float psi_max = MTPA_PSI_MAX;
+    const int Nscan = MTPA_PSI_SCAN_STEPS;
+    float psi_prev = psi_min;
+    float Te_prev = 0.0f, Is_prev = 0.0f, Id_prev = 0.0f, Iq_prev = 0.0f;
+    /* 计算 psi=0 点 */
+    compute_at_psi_gamma(psi_prev, gamma, &Te_prev, &Id_prev, &Iq_prev, &Is_prev);
 
-    float id = calc_id(psi_d, psi_q);
-    float iq = calc_iq(psi_d, psi_q);
+    /* 若 T_req == 0，最小 psi 就是 0（但电流可能为0）；
+       但是按用户要求 T=0 的点会被硬编码处理于上层函数 */
+    if (T_req <= 0.0f) {
+        if (out_psi) *out_psi = 0.0f;
+        if (out_Id) *out_Id = Id_prev;
+        if (out_Iq) *out_Iq = Iq_prev;
+        if (out_Te) *out_Te = Te_prev;
+        if (out_Is) *out_Is = Is_prev;
+        return true;
+    }
 
-    // float Is =sqrt( id * id + iq * iq);
-    // if (Is < 1e-6) return 0.0F; // 避免除零
+    /* 扫描寻找首个跨越区间 */
+    bool found_interval = false;
+    float psi_low = 0.0f, psi_high = 0.0f;
+    float Te_low = 0.0f, Te_high = 0.0f;
+    float Id_low = 0.0f, Iq_low = 0.0f, Is_low = 0.0f;
 
-    // float T = calc_torque(psi_d, psi_q, id, iq);
-    // return T / Is;
-     float Is2 =( id * id + iq * iq);
-    if (Is2 < 1e-6) return 0.0F; // 避免除零
+    for (int k = 1; k <= Nscan; ++k) {
+        float t = (float)k / (float)Nscan;
+        float psi_k = psi_min + t * (psi_max - psi_min);
+        float Te_k, Id_k, Iq_k, Is_k;
+        compute_at_psi_gamma(psi_k, gamma, &Te_k, &Id_k, &Iq_k, &Is_k);
 
-    float T = calc_torque(psi_d, psi_q, id, iq);
-    if(T>0){return (T*T) / Is2;}
-    else{return 0.0F;}
-    
-}
+        if (Te_prev < T_req && Te_k >= T_req) {
+            /* 区间 [psi_prev, psi_k] 包含第一个根 */
+            psi_low = psi_prev; psi_high = psi_k;
+            Te_low = Te_prev; Te_high = Te_k;
+            Id_low = Id_prev; Iq_low = Iq_prev; Is_low = Is_prev;
+            found_interval = true;
+            break;
+        }
+        psi_prev = psi_k;
+        Te_prev = Te_k; Id_prev = Id_k; Iq_prev = Iq_k; Is_prev = Is_k;
+    }
 
-// ---------- 黄金分割搜索 MTPA ----------
-float MTPA_find_theta(float psi) {
-    float left = 0.0F;
-    float right = M_PI / 2.0F;
+    if (!found_interval) {
+        /* 即使在 psi_max 上 Te 也不足，认为该 gamma 不可行（限幅） */
+        return false;
+    }
 
-    float c = right - (right - left) * GOLDEN_RATIO;
-    float d = left + (right - left) * GOLDEN_RATIO;
-
-    float Jc = objective(psi, c);
-    float Jd = objective(psi, d);
-
-    while ((right - left) > DELTA_THETA) {
-        if (Jc > Jd) {
-            right = d;
-            d = c;
-            Jd = Jc;
-            c = right - (right - left) * GOLDEN_RATIO;
-            Jc = objective(psi, c);
+    /* 二分法在 [psi_low, psi_high] 中求解 Te(psi) = T_req 精确的 psi_root （取较小根） */
+    float left = psi_low, right = psi_high;
+    float mid = 0.0f;
+    float Te_mid = 0.0f, Id_mid = 0.0f, Iq_mid = 0.0f, Is_mid = 0.0f;
+    int guard = 0;
+    while ((right - left) > MTPA_PSI_BISECT_TOL && guard < 80) {
+        mid = 0.5f * (left + right);
+        compute_at_psi_gamma(mid, gamma, &Te_mid, &Id_mid, &Iq_mid, &Is_mid);
+        if (Te_mid >= T_req) {
+            right = mid;
         } else {
-            left = c;
+            left = mid;
+        }
+        guard++;
+    }
+
+    /* 输出结果（取最终 right 位置） */
+    float psi_root = right;
+    compute_at_psi_gamma(psi_root, gamma, out_Te, out_Id, out_Iq, out_Is);
+    if (out_psi) *out_psi = psi_root;
+
+    /* 若 Te(root) < T_req（数值问题）则认为不可行 */
+    if (out_Te && (*out_Te < T_req - 1e-6f)) return false;
+
+    return true;
+}
+
+/* -------------- 外层：给定 T，搜索 gamma 使 Is 最小（黄金分割法） -------------- */
+/* 返回 true 并填充 out_p 表示找到可行的最小 Is；否则返回 false（无可行 gamma） */
+bool MTPA_compute_for_T(float T_req, MTPA_Point *out_p)
+{
+    if (!out_p) return false;
+
+    /* 特殊处理：T_req == 0 要求 Iq=0, Id=0.5 按题目要求 */
+    if (T_req <= 0.0f) {
+        out_p->T_req = 0.0f;
+        out_p->Psi_s = 0.0f;      /* 可以置 0 或者最小 */
+        out_p->gamma = 0.0f;
+        out_p->Id = 0.5f;         /* 题目特定规定 */
+        out_p->Iq = 0.0f;
+        out_p->valid = true;
+        return true;
+    }
+
+    /* 黄金分割搜索区间 gamma ∈ [0, pi/2] */
+    float a = 0.0f;
+    float b = (float)M_PI / 2.0f;
+    /* 若需要可以对区间进行收缩（例如 [1° , 89°] 等） */
+
+    /* 初始内点 c, d （按黄金比） */
+    const float gr = 0.6180339887498949f;
+    float c = b - (b - a) * gr;
+    float d = a + (b - a) * gr;
+
+    /* 计算目标值：对于每个 gamma，如果内层可解就得到对应 Psi, Id, Iq 与 Is；
+       黄金分割将比较 Is(c) 与 Is(d)，选较小者保留区间。不可行点被记为 Is = +inf。 */
+    float Is_c = 1e30f, Is_d = 1e30f;
+    float psi_tmp, Id_tmp, Iq_tmp, Te_tmp;
+    bool okc = find_psi_for_T_at_gamma(T_req, c, &psi_tmp, &Id_tmp, &Iq_tmp, &Te_tmp, &Is_c);
+    if (!okc) Is_c = 1e30f;   /* 不可行 */
+    bool okd = find_psi_for_T_at_gamma(T_req, d, &psi_tmp, &Id_tmp, &Iq_tmp, &Te_tmp, &Is_d);
+    if (!okd) Is_d = 1e30f;
+
+    int iter = 0;
+    float best_Is = 1e30f;
+    float best_gamma = 0.0f, best_psi = 0.0f, best_Id = 0.0f, best_Iq = 0.0f, best_Te = 0.0f;
+
+    while ((b - a) > MTPA_TH_TOL && iter < MTPA_TH_MAX_ITER) {
+        if (Is_c < Is_d) {
+            /* d 可以舍弃，b = d */
+            b = d;
+            d = c;
+            Is_d = Is_c;
+            /* 新 c */
+            c = b - (b - a) * gr;
+            /* eval c */
+            bool ok = find_psi_for_T_at_gamma(T_req, c, &psi_tmp, &Id_tmp, &Iq_tmp, &Te_tmp, &psi_tmp/*reuse*/);
+            if (ok) {
+                /* compute Is properly (we need Id, Iq) */
+                compute_at_psi_gamma(psi_tmp, c, &Te_tmp, &Id_tmp, &Iq_tmp, &Is_c);
+            } else {
+                Is_c = 1e30f;
+            }
+        } else {
+            /* c 可以舍弃，a = c */
+            a = c;
             c = d;
-            Jc = Jd;
-            d = left + (right - left) * GOLDEN_RATIO;
-            Jd = objective(psi, d);
+            Is_c = Is_d;
+            d = a + (b - a) * gr;
+            bool ok = find_psi_for_T_at_gamma(T_req, d, &psi_tmp, &Id_tmp, &Iq_tmp, &Te_tmp, &psi_tmp/*reuse*/);
+            if (ok) {
+                compute_at_psi_gamma(psi_tmp, d, &Te_tmp, &Id_tmp, &Iq_tmp, &Is_d);
+            } else {
+                Is_d = 1e30f;
+            }
+        }
+        iter++;
+    }
+
+    /* 取最终最小点（在 a..b 中采样取最小） */
+    int Ncheck = 9;
+    float best_local_Is = 1e30f;
+    for (int k = 0; k <= Ncheck; ++k) {
+        float g = a + (b - a) * ((float)k / (float)Ncheck);
+        float psi_out, id_out, iq_out, te_out, is_out;
+        bool ok = find_psi_for_T_at_gamma(T_req, g, &psi_out, &id_out, &iq_out, &te_out, &is_out);
+        if (ok && is_out < best_local_Is) {
+            best_local_Is = is_out;
+            best_gamma = g;
+            best_psi = psi_out;
+            best_Id = id_out;
+            best_Iq = iq_out;
+            best_Te = te_out;
         }
     }
 
-    return 0.5F * (left + right); // 最优角
+    if (best_local_Is >= 1e29f) {
+        /* 全区间不可行 */
+        out_p->valid = false;
+        return false;
+    }
+
+    /* 填充输出 */
+    out_p->T_req = T_req;
+    out_p->Psi_s = best_psi;
+    out_p->gamma = best_gamma;
+    out_p->Id = best_Id;
+    out_p->Iq = best_Iq;
+    out_p->valid = true;
+    return true;
 }
 
-
-// 输入：磁链幅值 Psi_s
-// 输出：对应 MTPA 点 (Iq,Iq)
-MTPA_Point calc_MTPA_point(float PSI_s)
- {
-    MTPA_Point p;
-    p.Psi_s = PSI_s;
-    float theta_opt = MTPA_find_theta(PSI_s);
-    float psi_d = p.Psi_s * COS(theta_opt);
-    float psi_q = p.Psi_s * SIN(theta_opt);
-    p.PSI_theta = theta_opt;
-
-    float id = calc_id(psi_d, psi_q);
-    float iq = calc_iq(psi_d, psi_q);
-    
-    p.Iq = iq;
-    p.Id = id;
-
-    p.is_fixed = 0;
-    return p;
-}
-
-// ==================== 插点并排序 ====================
-//static void insert_point(MTPA_Point newP) {
-//    if (point_count < MAX_POINTS) {
-//        MTPA_table[point_count++] = newP;
-//    } else {
-        // 找到最远的非固定点，替换掉
-//        int far_idx = -1;
-  //      float max_dist = -1;
-  //      for (int j = 0; j < point_count; j++) {
-  //          if (!MTPA_table[j].is_fixed) {
-  //              float dist = fabs(MTPA_table[j].Iq - newP.Iq);
-  //              if (dist > max_dist) {
-   //                 max_dist = dist;
-  //                  far_idx = j;
-   //             }
-   //         }
-    //    }
-   //     if (far_idx >= 0) {
-    //        MTPA_table[far_idx] = newP;
-    //    }
-    //}
-
-    // 排序（按 Iq 从小到大）
-    //for (int i = 0; i < point_count - 1; i++) {
-    //    for (int j = 0; j < point_count - 1 - i; j++) {
-    //        if (MTPA_table[j].Iq > MTPA_table[j + 1].Iq) {
-    //            MTPA_Point tmp = MTPA_table[j];
-    //            MTPA_table[j] = MTPA_table[j + 1];
-    //            MTPA_table[j + 1] = tmp;
-    //        }
-    //    }
-  //  }
-//}
-
-/*** 两份表 ***/
-static MTPA_Point tblA[MAX_POINTS], tblB[MAX_POINTS];
-static MTPA_Point *active_tbl = tblA;  static int active_cnt = 0;   // ISR 只读
-static MTPA_Point *build_tbl  = tblB;  static int build_cnt  = 0;   // 主循环只写
-
-/*** 版本号：偶数=稳定；发布时先++(奇)，写指针，再++(偶) ***/
-static volatile uint16_t mtpa_seq = 0;
-
-/*** 给ISR的“一致快照” ***/
-static inline void mtpa_snapshot_for_isr(MTPA_Point **t, int *n){
-    uint16_t s1 = 0, s2 = 0;
-    do {
-        s1 = mtpa_seq; __THREAD_FENCE();
-        *t = active_tbl; *n = active_cnt;
-        __THREAD_FENCE(); s2 = mtpa_seq;
-    } while ((s1 != s2) || (s1 & 1U));   // 若发布中(奇数)或不一致，则重读
-}
-
-/*** 主循环发布（不关中断） ***/
- void mtpa_publish_from_main(void){
-    mtpa_seq++; __THREAD_FENCE();                 // 进入发布（奇数）
-    active_tbl = build_tbl; active_cnt = build_cnt;
-    __THREAD_FENCE(); mtpa_seq++; 
-    if(mtpa_seq>=60){mtpa_seq=0;}
-                   // 发布完成（偶数）
-    // 交换角色，清空 build 计数
-    build_tbl  = (build_tbl == tblB) ? tblA : tblB;
-    //build_cnt  = 0;
-}
-
-/*** 在 build 上插入并按 Iq 排序 ***/
-
-static void insert_point_on_build(MTPA_Point newP)
+/* -------------- 构建整张表（T_min..T_max, 共 n_points） -------------- */
+void MTPA_build_table(MTPA_Point table[], int n_points, float T_min, float T_max)
 {
-    if (build_cnt < MAX_POINTS){
-        build_tbl[build_cnt++] = newP;
-    }else{
-        int far_idx=-1; float maxd=-1.f;
-        for (int j=0;j<build_cnt;j++){
-            if (!build_tbl[j].is_fixed){
-                float d = fabsf(build_tbl[j].Iq - newP.Iq);
-                if (d>maxd){ maxd=d; far_idx=j; }
-            }
-        }
-        if (far_idx>=0) build_tbl[far_idx]=newP;
-    }
-    // 冒泡排序（仍然在主循环执行）
-    for (int i=0;i<build_cnt-1;i++){
-        for (int j=0;j<build_cnt-1-i;j++){
-            if (build_tbl[j].Iq > build_tbl[j+1].Iq){
-                MTPA_Point t = build_tbl[j]; build_tbl[j]=build_tbl[j+1]; build_tbl[j+1]=t;
+    if (n_points <= 0) return;
+    /* 均匀分配 T 值（含端点） */
+    for (int k = 0; k < n_points; ++k) {
+        float t = (float)k / (float)(n_points - 1);
+        float T = T_min + t * (T_max - T_min);
+        if (T <= 0.0f) {
+            /* 按约定：T=0 特殊点 Id=0.5, Iq=0 */
+            table[k].T_req = 0.0f;
+            table[k].Psi_s = 0.0f;
+            table[k].gamma = 0.0f;
+            table[k].Id = 0.5f;
+            table[k].Iq = 0.0f;
+            table[k].valid = true;
+        } else {
+            MTPA_Point p;
+            bool ok = MTPA_compute_for_T(T, &p);
+            if (!ok) {
+                /* 若做不到，可将点标为 invalid，或尝试回退到限压解（此处简单标 invalid） */
+                table[k].T_req = T;
+                table[k].valid = false;
+                table[k].Psi_s = 0.0f;
+                table[k].gamma = 0.0f;
+                table[k].Id = 0.0f;
+                table[k].Iq = 0.0f;
+            } else {
+                table[k] = p;
             }
         }
     }
 }
 
-
-
-// ==================== MTPA 更新函数 (带稳定性检测) ====================
-/*void MTPA_update(float Iq_meas) 
+/* -------------- 运行期插值：按 Iq 查 Id（中断中可用） -------------- */
+void MTPA_interp_by_Iq(const MTPA_Point table[], int n_points, float Iq_ref, float *Id_ref, float *Iq_out)
 {
-    // 1. 电流稳定性检测
-    if (fabs(Iq_meas - last_Iq_meas) < DELTA_STABLE) {
-        stable_counter++;
-    } 
-    else {
-        stable_counter = 0;
+    if (n_points <= 0) {
+        if (Id_ref) *Id_ref = 0.0f;
+        if (Iq_out) *Iq_out = 0.0f;
+        return;
     }
-    last_Iq_meas = Iq_meas;
-
-   
-    // 2. 遍历查找 Iq 所在的区间
-    for (int i = 0; i < point_count - 1; i++) {
-        if (Iq_meas >= MTPA_table[i].Iq && Iq_meas <= MTPA_table[i + 1].Iq) {
-            float psi_left  = MTPA_table[i].Psi_s;
-            float psi_right = MTPA_table[i + 1].Psi_s;
-            float alpha = 0.5; // 低通滤波系数
-            float mtpa_ratio = (Iq_meas - MTPA_table[i].Iq) / (MTPA_table[i+1].Iq - MTPA_table[i].Iq);
-            float Id_mtpa_new  = MTPA_table[i].Id + mtpa_ratio * (MTPA_table[i+1].Id - MTPA_table[i].Id);// 线性插值
-            static float Id_mtpa_old = 0.0f;
-            Id_mtpa = alpha * Id_mtpa_new + (1 - alpha) * Id_mtpa_old;
-            Id_mtpa_old = Id_mtpa;
-            if (stable_counter < STABLE_COUNT) 
-            {
-            return; // 电流未稳定，不更新
-            }
-            // 区间过小，认为收敛
-            if (fabs(MTPA_table[i + 1].Iq -MTPA_table[i].Iq ) < DELTA_I) {
-                return;
-            }
-            if (fabs(MTPA_table[i].Iq - Iq_meas) < delta_iq ||
-                fabs(MTPA_table[i + 1].Iq - Iq_meas) < delta_iq)
-            {
-                return;
-            } 
-            
-            stable_counter = 0; // 重置计数器
-
-            // 二分：取中点 Psi
-            float psi_mid = 0.5 * (psi_left + psi_right);
-            MTPA_Point newP = calc_MTPA_point(psi_mid);
-
-            // 如果新点 Iq 已经和测量 Iq 接近，认为收敛
-           
-
-            // 插入新点
-            insert_point(newP);
-            return;
-        }
-    }
-}*/
-
-// ==================== 初始化表 ====================
-
-void MTPA_init(float psi_min,float psi_1,float psi_2,float psi_3, float psi_mid,float psi_4,float psi_5, float psi_6,float psi_7,float psi_8,float psi_9, float psi_max) 
-{
-   /* MTPA_table[0] = calc_MTPA_point(psi_min); MTPA_table[0].is_fixed = true;
-    MTPA_table[1] = calc_MTPA_point(psi_1); MTPA_table[1].is_fixed = true;
-    MTPA_table[2] = calc_MTPA_point(psi_2); MTPA_table[2].is_fixed = true;
-    MTPA_table[3] = calc_MTPA_point(psi_3); MTPA_table[3].is_fixed = true;
-    MTPA_table[4] = calc_MTPA_point(psi_mid); MTPA_table[4].is_fixed = true;
-    MTPA_table[5] = calc_MTPA_point(psi_4); MTPA_table[5].is_fixed = true;
-    MTPA_table[6] = calc_MTPA_point(psi_5); MTPA_table[6].is_fixed = true;
-    MTPA_table[7] = calc_MTPA_point(psi_max); MTPA_table[7].is_fixed = true;
-    point_count = 8;*/
-     float psis[12]={psi_min,psi_1,psi_2,psi_3,psi_mid,psi_4,psi_5,psi_6,psi_7,psi_8,psi_9,psi_max};
-    build_cnt = 0;
-    for(int k=0;k<12;k++){ MTPA_Point p = calc_MTPA_point(psis[k]); p.is_fixed=1; insert_point_on_build(p); }
-    mtpa_publish_from_main();   // 活动表就绪
-}
-/*** —— 中断读取时的简易插值（只读 active 表） —— ***/
- void interp_IdIq_by_Iq(const MTPA_Point *T, int N, float iq_meas, float *Id_ref, float *Iq_ref){
-    if (N<2){ *Id_ref=0; *Iq_ref=iq_meas; return; }
+    /* 找到 Iq_ref 所在区间（表按 Iq 不一定排序；此处假定传入表是按 Iq 单调的，
+       若你的表不是单调，请事先按 Iq 排序或改为按 Psi/Id 查找。 */
     int i = 0;
-    for (i=0;i<N-1;i++) if (iq_meas>=T[i].Iq && iq_meas<=T[i+1].Iq) break;
-    if (i>=N-1) i=N-2;
-    float w = (iq_meas - T[i].Iq) / (T[i+1].Iq - T[i].Iq + 1e-9f);
-    *Id_ref = T[i].Id + w*(T[i+1].Id - T[i].Id);
-    *Iq_ref = iq_meas; // 或者也插值Iq
-}
-    
-extern MTPA_Point *active_tbl; extern int active_cnt;
-extern MTPA_Point *build_tbl;  extern int build_cnt;
-
-extern void insert_point_on_build(MTPA_Point p);
-volatile int  mtpa_publish_pending = 0;
-
-
-void MTPA_service_tick(void)
-{
-    if (!mtpa_req_pending) return;
-
-    // 取出请求并清零（不关中断，先读内容再清标志）
-    float psi_mid = mtpa_req_mb.psi_mid;
-    __THREAD_FENCE(); mtpa_req_pending = 0;
-
-    // 第一次进入时，把 active 拷到 build（只需做一次）
-    static int cloned = 0;
-    if (!cloned){ for(int i=0;i<active_cnt;i++) build_tbl[i]=active_tbl[i];
-                  build_cnt = active_cnt; cloned = 1; }
-
-    // —— 主循环里：黄金分割 & 新点插入（冒泡排序保留） ——
-    MTPA_Point newP = calc_MTPA_point(psi_mid);
-    insert_point_on_build(newP);
-
-    // —— 发布标志 ——
-    //mtpa_publish_from_main();
-    mtpa_publish_pending = 1;
-}
-void MTPA_update_ISR(float Iq_meas)
-{
-    static int send_cooldown = 0;
-    const int SEND_INTERVAL = 200; // 调用间隔，可根据实际调整
-    // 取活动表的快照（不关中断）
-    MTPA_Point *T = {0}; int N = 0; mtpa_snapshot_for_isr(&T, &N);
-    if (N < 2) return;
-
-    // 稳定性检测
-    if (fabsf(Iq_meas - last_Iq_meas) < DELTA_STABLE) stable_counter++; else stable_counter=0;
-    last_Iq_meas = Iq_meas;
-
-    // 遍历查找 Iq 区间
-    for (int i = 0; i < N - 1; i++) {
-        if (Iq_meas >= T[i].Iq && Iq_meas <= T[i + 1].Iq) {
-
-            // 线性插值 Id_mtpa
-            float w = (Iq_meas - T[i].Iq) / (T[i+1].Iq - T[i].Iq + 1e-9f);
-            float Id_mtpa_new = T[i].Id + w * (T[i+1].Id - T[i].Id);
-            static float Id_mtpa_old = 0.f;
-            float alpha = 0.25f;
-            Id_mtpa = alpha*Id_mtpa_new + (1-alpha)*Id_mtpa_old;
-            Id_mtpa_old = Id_mtpa;
-
-            // 早退条件
-            if (stable_counter < STABLE_COUNT) return;
-            if (fabsf(T[i+1].Iq - T[i].Iq) < DELTA_I) return;
-            if (fabsf(T[i].Iq - Iq_meas) < delta_iq ||fabsf(T[i+1].Iq - Iq_meas) < delta_iq) return;
-            // 间隔控制，禁止连续发指令
-            if (send_cooldown > 0) {
-                send_cooldown--;
-                return;
-            }
-            send_cooldown = SEND_INTERVAL;
-
-            // —— 只“发指令”，不做计算 —— 
-            float psi_mid = 0.5f * (T[i].Psi_s + T[i+1].Psi_s);
-            if (!mtpa_req_pending) { post_req_from_isr(psi_mid, Iq_meas); }
-            stable_counter = 0;
-            return;
-        }
-    }
-}
-// 简单邮箱（单生产者=ISR，单消费者=主循环）
-
-volatile int mtpa_req_pending = 0;
-
-
-void post_req_from_isr(float psi_mid, float iq_meas){
-    mtpa_req_mb.psi_mid = psi_mid;
-    mtpa_req_mb.iq_meas = iq_meas;
-    __THREAD_FENCE(); mtpa_req_pending = 1;   // 保证先写内容再置位
+    for (i=0;i<n_points-1;i++) if (Iq_ref>=table[i].Iq && Iq_ref<=table[i+1].Iq) break;
+    if (i>=n_points-1) i=n_points-2;
+    float w = (Iq_ref - table[i].Iq) / (table[i+1].Iq - table[i].Iq + 1e-9f);
+    *Id_ref = table[i].Id + w*(table[i+1].Id - table[i].Id);
+    *Iq_out = Iq_ref; // 或者也插值Iq
 }
 
-extern void mtpa_snapshot_for_isr(MTPA_Point **t, int *n);   // 来自 MTPA_table.c
-extern void interp_IdIq_by_Iq(const MTPA_Point *T, int N, float iq_meas, float *Id_ref, float *Iq_ref);
+
+
