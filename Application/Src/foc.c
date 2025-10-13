@@ -114,10 +114,10 @@ void FOC_Main(void)
         PID_Controller(RampGenerator(&Speed_Ramp), FOC.Speed, &Speed_PID);
       }
 
-      //FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
-      FOC.Iq_ref = IQtest;
-      IQtest=IQtest+0.0001;
-      if(IQtest>IQtestMax) IQtest=0;
+      FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
+      // FOC.Iq_ref = IQtest;
+      // IQtest=IQtest+0.0001;
+      // if(IQtest>IQtestMax) IQtest=0;
 
 
       // if(FOC.Iq_ref>0)
@@ -258,7 +258,7 @@ void Parameter_Init(void)
   Speed_PID.output = 0.0F;
   Speed_PID.Ts = 10 * FOC.Ts;
 
-  Speed_Ramp.slope = 50.0F;  // limit to 50 rpm/s
+  Speed_Ramp.slope = 250.0F;  // limit to 50 rpm/s
   Speed_Ramp.limit_min = -1800.0F;
   Speed_Ramp.limit_max = 1800.0F;
   Speed_Ramp.value = 0.0F;
