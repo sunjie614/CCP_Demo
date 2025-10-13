@@ -47,8 +47,15 @@ void FOC_Main(void)
     {
       Parameter_Init();
       FOC.Mode = IDLE;
-
       Experiment_Init(&Experiment, FOC.Ts, 512, 2, 20, 2, 10, 1, 200);
+      MTPA_build_table(mtpa_table, MTPA_TABLE_POINTS, 0.0f, 50.0f);  /* T 从 0 到 50, 共 51 点 */
+      if (Experiment.Complete == true)
+      {
+      float ad0 = 0.0F, add = 0.0F, aq0 = 0.0F, aqq = 0.0F, adq = 0.0F;
+      Get_Identification_Results(&Experiment, &ad0, &add, &aq0, &aqq, &adq);
+      MTPA_Get_Parameter(ad0, add, aq0, aqq, adq);
+      MTPA_build_table(mtpa_table, MTPA_TABLE_POINTS, 0.0f, 50.0f);  /* T 从 0 到 50, 共 51 点 */
+      }
       break;
     }
     case IDLE:
@@ -107,7 +114,12 @@ void FOC_Main(void)
         PID_Controller(RampGenerator(&Speed_Ramp), FOC.Speed, &Speed_PID);
       }
 
-      FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
+      //FOC.Iq_ref = Speed_PID.output;  // Iq_ref = Speed_PID.output
+      FOC.Iq_ref = IQtest;
+      IQtest=IQtest+0.0001;
+      if(IQtest>IQtestMax) IQtest=0;
+
+
       // if(FOC.Iq_ref>0)
       // {float x1=FOC.Iq_ref;
       // float x2=x1*x1;
@@ -174,6 +186,7 @@ void FOC_Main(void)
       if (STOP == 0)
       {
         Experiment_Step(&Experiment, FOC.Id, FOC.Iq, &FOC.Ud_ref, &FOC.Uq_ref);
+        
       }
 
       break;

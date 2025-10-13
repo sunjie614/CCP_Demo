@@ -10,6 +10,13 @@
   #define MAX(a,b) (((a)>(b))?(a):(b))
 #endif
 
+/* 给定单个 T，计算 MTPA 点（主函数：调用可嵌入初始化）
+   返回 true 表示找到有效点并写入 out_p；否则返回 false（不可行） */
+static bool MTPA_compute_for_T(float T_req, MTPA_Point *out_p);
+
+/* 给定 Psi_s、gamma 计算 id, iq, Te（模型来自你给出的拟合函数） */
+static void MTPA_model_idiq(float psi_d, float psi_q, float *id, float *iq);
+static float MTPA_calc_torque(float psi_d, float psi_q, float id, float iq);
 
 /* ------------- 你的拟合模型参数（可以修改/从外部注入） ------------- */
 /* 与用户给定参数一致 */
@@ -17,9 +24,18 @@
 // float a_q = 10.524F, b_q = 128.6657F, n = 1.0F;
 // float c_coeff = 62.6F, h = 1.0F, j = 0.0F;
 extern MTPA_Point mtpa_table[MTPA_TABLE_POINTS]= {0};
-float a_d = 5.59756, b_d = 5.15426, m = 5.0;
-float a_q = 6.306, b_q = 171.571, n = 1.0;
-float c_coeff = 35.90, h = 1.0, j = 0.0;
+static float a_d = 5.59756, b_d = 5.15426, m = 5.0;
+static float a_q = 6.306, b_q = 171.571, n = 1.0;
+static float c_coeff = 35.90, h = 1.0, j = 0.0;
+
+void MTPA_Get_Parameter(float ad0, float add, float aq0, float aqq, float adq)
+{
+    a_d = ad0;
+    b_d = add;
+    a_q = aq0;
+    b_q = aqq;
+    c_coeff = adq;
+}
 
 /* -------------- 模型实现： psi_d, psi_q -> id, iq -------------- */
 /* 使用题主给定的模型（包含绝对值次幂项） */

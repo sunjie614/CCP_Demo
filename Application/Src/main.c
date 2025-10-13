@@ -9,7 +9,7 @@
 #include "systick.h"
 #include "tim.h"
 #include "usart.h"
-#include "MTPA.h"
+
 
 volatile uint32_t DWT_Count = 0;
 
@@ -47,7 +47,7 @@ int main(void)
   nvic_config();
   COM_ProtocolInit();
   //extern MTPA_Point mtpa_table[MTPA_TABLE_POINTS];
-  MTPA_build_table(mtpa_table, MTPA_TABLE_POINTS, 0.0f, 50.0f);  /* T 从 0 到 50, 共 51 点 */
+  
 
   while (1)
   {
