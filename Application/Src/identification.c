@@ -3,7 +3,6 @@
 #include <string.h>
 #include "math.h"
 #include "stdint.h"
-#include "MTPA.h"
 
 /* Estimate_Rs 与 SquareWaveGenerater 原型（你已有的实现） */
 static inline bool Estimate_Rs(float Current, float* Voltage_out, float* Rs);
@@ -22,14 +21,14 @@ volatile uint32_t g_results_cycles[MAX_STEPS];
 
 // 当前步索引
 volatile uint32_t g_result_index = 0;
-//参数赋值
-void assign_parameters_from_LLS(LLS_Result_t res)
+
+void Get_Identification_Results(FluxExperiment_t* exp, float* ad0, float* add, float* aq0, float* aqq, float* adq)
 {
-  a_d = res.ad0;
-  b_d = res.add;
-  a_q = res.aq0;
-  b_q = res.aqq;
-  c_coeff = res.adq;
+  if (ad0) *ad0 = exp->LLS.ad0;
+  if (add) *add = exp->LLS.add;
+  if (aq0) *aq0 = exp->LLS.aq0;
+  if (aqq) *aqq = exp->LLS.aqq;
+  if (adq) *adq = exp->LLS.adq;
 }
 
 // 保存一次结果
@@ -63,7 +62,7 @@ void Experiment_Init(FluxExperiment_t* exp, float Ts, int sample_capacity, int r
   exp->final_I = final_I;
   exp->step_dir = (step_dir >= 0) ? 1 : -1;
   exp->inject_amp = inject_amp;
-  exp->Running = false;
+  exp->Complete = false;
   exp->pos = 0;
   exp->edge_count = 0;
   exp->step_index = 0;
@@ -558,8 +557,8 @@ void Experiment_Step(FluxExperiment_t* exp, float Id, float Iq, float* Ud, float
     {
       *Ud = 0.0f;
       *Uq = 0.0f;
-      assign_parameters_from_LLS(exp->LLS);
-      exp->Running = false;
+
+      exp->Complete = true;
       break;
     }
   }

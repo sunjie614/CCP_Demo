@@ -2,7 +2,7 @@
 #define identification_H
 #include "stdbool.h"
 #include "stdint.h"
-#include"MTPA.h"
+
 #define CURRENT_FILTER_ALPHA 0.1F
 #define CURRENT_LIMIT 10.0F  // 最大允许电流（A）
 #define CURRENT_RATIO 0.8F   // 估 Rs 时允许的最大电流
@@ -149,13 +149,13 @@ typedef struct
   ExpState_e state;
   VoltageInjector_t inj;  // 指向外部注入器
   float inject_amp;       // 注入幅值（外部传入，Ud_amp / Uq_amp）
-  bool Running;           // 是否正在运行（非 DONE）
+  bool Complete;           // 是否正在运行（非 DONE）
 } FluxExperiment_t;
 
 void Experiment_Step(FluxExperiment_t* exp, float Id, float Iq, float* Ud, float* Uq);
 void Experiment_Init(FluxExperiment_t* exp, float Ts, int sample_capacity, int repeat_times,
                      int max_steps, int start_I, int final_I, int step_dir, float inject_amp);
-void assign_parameters_from_LLS(LLS_Result_t res);
+void Get_Identification_Results(FluxExperiment_t* exp, float* ad0, float* add, float* aq0, float* aqq, float* adq);
 // void MTPA_Init(void);
 // void MTPA_SetCurrent(float current);
 // float MTPA_GetCurrent(void);
