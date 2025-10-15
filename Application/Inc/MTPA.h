@@ -37,6 +37,8 @@ typedef struct {
     float gamma;   /* 最优角度（rad） */
     float Id;      /* d轴电流 */
     float Iq;      /* q轴电流 */
+    float Ld;     /* 对应的 Ld */
+    float Lq;     /* 对应的 Lq */
     bool  valid;   /* 是否找到可行解 */
 } MTPA_Point;
 

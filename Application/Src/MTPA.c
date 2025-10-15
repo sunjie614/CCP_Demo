@@ -200,7 +200,6 @@ bool MTPA_compute_for_T(float T_req, MTPA_Point *out_p)
     if (!okd) Is_d = 1e30f;
 
     int iter = 0;
-    float best_Is = 1e30f;
     float best_gamma = 0.0f, best_psi = 0.0f, best_Id = 0.0f, best_Iq = 0.0f, best_Te = 0.0f;
 
     while ((b - a) > MTPA_TH_TOL && iter < MTPA_TH_MAX_ITER) {
@@ -264,6 +263,11 @@ bool MTPA_compute_for_T(float T_req, MTPA_Point *out_p)
     out_p->gamma = best_gamma;
     out_p->Id = best_Id;
     out_p->Iq = best_Iq;
+    
+    float psid = best_psi * cosf(best_gamma);
+    float psiq = best_psi * sinf(best_gamma);
+    out_p->Ld = (psid / best_Id);
+    out_p->Lq = (psiq / best_Iq);
     out_p->valid = true;
     return true;
 }
@@ -283,6 +287,8 @@ void MTPA_build_table(MTPA_Point table[], int n_points, float T_min, float T_max
             table[k].gamma = 0.0f;
             table[k].Id = 0.5f;
             table[k].Iq = 0.0f;
+            table[k].Ld = 0.1f;
+            table[k].Lq = 0.1f;
             table[k].valid = true;
         } else {
             MTPA_Point p;
@@ -295,6 +301,8 @@ void MTPA_build_table(MTPA_Point table[], int n_points, float T_min, float T_max
                 table[k].gamma = 0.0f;
                 table[k].Id = 0.0f;
                 table[k].Iq = 0.0f;
+                table[k].Ld = 0.0f;
+                table[k].Lq = 0.0f;
             } else {
                 table[k] = p;
             }

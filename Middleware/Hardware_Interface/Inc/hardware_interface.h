@@ -9,7 +9,7 @@
 #define Temperature_Threshold 80.0F
 #define Current_Threshold 25.0F
 #define Voltage_Rate 560.0F
-#define Voltage_Fluctuation 60.0F
+#define Voltage_Fluctuation 120.0F
 
 typedef enum
 {

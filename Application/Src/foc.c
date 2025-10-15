@@ -4,6 +4,13 @@
 #include "hardware_interface.h"
 #include "position_sensor.h"
 
+typedef struct
+{
+  float a;       // 反馈系数（= 极点位置）
+  float y_last;  // 上一次输出值
+} LowPassFilter_t;
+
+
 Motor_Parameter_t Motor;
 FOC_Parameter_t FOC;
 VF_Parameter_t VF;
@@ -17,7 +24,9 @@ Clarke_t Clarke;
 MTPA_Coefficients_t MTPA;
 float Electric_Power = 0.0F;
 float Electric_Te = 0.0F;
+LowPassFilter_t Speed_Filter = {.a = 0.98442F, .y_last = 0.0F};
 LowPassFilter_t Power_Filter = {.a = 0.95442F, .y_last = 0.0F};
+
 
 float theta_mech = 0.0F;
 float theta_elec = 0.0F;
@@ -38,7 +47,7 @@ static inline void ParkTransform(float_t Ialpha, float_t Ibeta, float_t theta,
 static inline void InvParkTransform(float_t Udaxis, float_t Uqaxis, float_t theta, InvPark_t* out);
 static inline void SVPWM_Generate(float Ualpha, float Ubeta, float inv_Vdc, FOC_Parameter_t* foc);
 static inline float Cal_Power(FOC_Parameter_t* foc);
-
+static inline float LowPassFilter_Update(LowPassFilter_t* filter, float x);
 // SECTION - FOC Main
 void FOC_Main(void)
 {
@@ -375,13 +384,8 @@ static inline float wrap_theta_2pi(float theta)
   return theta;
 }
 
-typedef struct
-{
-  float a;       // 反馈系数（= 极点位置）
-  float y_last;  // 上一次输出值
-} LowPassFilter_t;
 
-LowPassFilter_t Speed_Filter = {.a = 0.98442F, .y_last = 0.0F};
+
 
 static inline float LowPassFilter_Update(LowPassFilter_t* filter, float x)
 {
