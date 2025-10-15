@@ -15,6 +15,9 @@ RampGenerator_t Speed_Ramp;
 InvPark_t Inv_Park;
 Clarke_t Clarke;
 MTPA_Coefficients_t MTPA;
+float Electric_Power = 0.0F;
+float Electric_Te = 0.0F;
+LowPassFilter_t Power_Filter = {.a = 0.95442F, .y_last = 0.0F};
 
 float theta_mech = 0.0F;
 float theta_elec = 0.0F;
@@ -34,6 +37,7 @@ static inline void ParkTransform(float_t Ialpha, float_t Ibeta, float_t theta,
                                  FOC_Parameter_t* out);
 static inline void InvParkTransform(float_t Udaxis, float_t Uqaxis, float_t theta, InvPark_t* out);
 static inline void SVPWM_Generate(float Ualpha, float Ubeta, float inv_Vdc, FOC_Parameter_t* foc);
+static inline float Cal_Power(FOC_Parameter_t* foc);
 
 // SECTION - FOC Main
 void FOC_Main(void)
@@ -202,10 +206,21 @@ void FOC_Main(void)
     }
   }
 
+  Electric_Power = Cal_Power(&FOC);
+
   InvParkTransform(FOC.Ud_ref, FOC.Uq_ref, FOC.Theta, &Inv_Park);
   SVPWM_Generate(Inv_Park.Ualpha, Inv_Park.Ubeta, FOC.inv_Udc, &FOC);
 }
 // !SECTION
+
+static inline float Cal_Power(FOC_Parameter_t* foc)
+{
+  float power = 0.0F;
+  power = 1.5 * (foc->Ud_ref * foc->Id + foc->Uq_ref * foc->Iq)-foc->Id*foc->Id*Motor.Rs - foc->Iq*foc->Iq*Motor.Rs;
+  power = LowPassFilter_Update(&Power_Filter,power);
+  Electric_Te = power <= 10.0F ? 0 : power * 60.0F / (M_2PI * foc->Speed  + 0.0001F); // 计算电磁转矩
+  return power;
+}
 
 void FOC_UpdateMainFrequency(float f, float Ts, float PWM_ARR)
 {
@@ -281,9 +296,9 @@ void Parameter_Init(void)
   Iq_PID.Kp = 27.646015F;
   Iq_PID.Ki = 408.40704496F;
   Iq_PID.Kd = 0.0F;
-  Iq_PID.MaxOutput = 300.0F;
-  Iq_PID.MinOutput = -300.0F;
-  Iq_PID.IntegralLimit = 300.0F;
+  Iq_PID.MaxOutput = 350.0F;
+  Iq_PID.MinOutput = -350.0F;
+  Iq_PID.IntegralLimit = 350.0F;
   Iq_PID.previous_error = 0.0F;
   Iq_PID.integral = 0.0F;
   Iq_PID.output = 0.0F;

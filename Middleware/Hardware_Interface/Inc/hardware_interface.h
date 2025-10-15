@@ -7,7 +7,7 @@
 #include "stdint.h"
 
 #define Temperature_Threshold 80.0F
-#define Current_Threshold 18.0F
+#define Current_Threshold 25.0F
 #define Voltage_Rate 560.0F
 #define Voltage_Fluctuation 60.0F
 
