@@ -4,6 +4,12 @@
 #include "hardware_interface.h"
 #include "position_sensor.h"
 
+typedef struct
+{
+  float a;       // 反馈系数（= 极点位置）
+  float y_last;  // 上一次输出值
+} LowPassFilter_t;
+
 Motor_Parameter_t Motor;
 FOC_Parameter_t FOC;
 VF_Parameter_t VF;
@@ -38,6 +44,7 @@ static inline void ParkTransform(float_t Ialpha, float_t Ibeta, float_t theta,
 static inline void InvParkTransform(float_t Udaxis, float_t Uqaxis, float_t theta, InvPark_t* out);
 static inline void SVPWM_Generate(float Ualpha, float Ubeta, float inv_Vdc, FOC_Parameter_t* foc);
 static inline float Cal_Power(FOC_Parameter_t* foc);
+static inline float LowPassFilter_Update(LowPassFilter_t* filter, float x);
 
 // SECTION - FOC Main
 void FOC_Main(void)
@@ -93,6 +100,18 @@ void FOC_Main(void)
 
       ParkTransform(Clarke.Ialpha, Clarke.Ibeta, FOC.Theta, &FOC);
 
+      
+      static volatile uint16_t Is_test = 0;
+      static volatile uint16_t Is_theta_test = 0;
+      static volatile bool Test_flag = 0;
+      float Id_test = Is_test * cosf(Is_theta_test * M_2PI / 360.0f);
+      float Iq_test = Is_test * sinf(Is_theta_test * M_2PI / 360.0f);
+      if (Test_flag == 1)
+      {
+        IF.Id_ref = Id_test;
+        IF.Iq_ref = Iq_test;
+      }
+      
       FOC.Id_ref = IF.Id_ref;
       FOC.Iq_ref = IF.Iq_ref;
 
@@ -375,11 +394,6 @@ static inline float wrap_theta_2pi(float theta)
   return theta;
 }
 
-typedef struct
-{
-  float a;       // 反馈系数（= 极点位置）
-  float y_last;  // 上一次输出值
-} LowPassFilter_t;
 
 LowPassFilter_t Speed_Filter = {.a = 0.98442F, .y_last = 0.0F};
 
