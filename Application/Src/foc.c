@@ -1,8 +1,9 @@
 #include "foc.h"
 #include "MTPA.h"
-#include "identification.h"
 #include "hardware_interface.h"
+#include "identification.h"
 #include "position_sensor.h"
+
 
 typedef struct
 {
@@ -58,16 +59,15 @@ void FOC_Main(void)
     {
       Parameter_Init();
       FOC.Mode = IDLE;
-      MTPA_build_table(mtpa_table, MTPA_TABLE_POINTS, 0.0f, 50.0f);  /* T 从 0 到 50, 共 51 点 */
+      MTPA_build_table(mtpa_table, MTPA_TABLE_POINTS, 0.0f, 50.0f); /* T 从 0 到 50, 共 51 点 */
       if (Experiment.Complete == true)
       {
-      float ad0 = 0.0F, add = 0.0F, aq0 = 0.0F, aqq = 0.0F, adq = 0.0F;
-      Get_Identification_Results(&Experiment, &ad0, &add, &aq0, &aqq, &adq);
-      MTPA_Get_Parameter(ad0, add, aq0, aqq, adq);
-      MTPA_build_table(mtpa_table, MTPA_TABLE_POINTS, 0.0f, 50.0f);  /* T 从 0 到 50, 共 51 点 */
+        float ad0 = 0.0F, add = 0.0F, aq0 = 0.0F, aqq = 0.0F, adq = 0.0F;
+        Get_Identification_Results(&Experiment, &ad0, &add, &aq0, &aqq, &adq);
+        MTPA_Get_Parameter(ad0, add, aq0, aqq, adq);
+        MTPA_build_table(mtpa_table, MTPA_TABLE_POINTS, 0.0f, 50.0f); /* T 从 0 到 50, 共 51 点 */
       }
       Experiment_Init(&Experiment, FOC.Ts, 512, 2, 20, 2, 10, 1, 200);
-      
 
       break;
     }
@@ -100,9 +100,8 @@ void FOC_Main(void)
 
       ParkTransform(Clarke.Ialpha, Clarke.Ibeta, FOC.Theta, &FOC);
 
-      
-      static volatile uint16_t Is_test = 0;
-      static volatile uint16_t Is_theta_test = 0;
+      static volatile float Is_test = 0;
+      static volatile float Is_theta_test = 0;
       static volatile bool Test_flag = 0;
       float Id_test = Is_test * cosf(Is_theta_test * M_2PI / 360.0f);
       float Iq_test = Is_test * sinf(Is_theta_test * M_2PI / 360.0f);
@@ -111,7 +110,7 @@ void FOC_Main(void)
         IF.Id_ref = Id_test;
         IF.Iq_ref = Iq_test;
       }
-      
+
       FOC.Id_ref = IF.Id_ref;
       FOC.Iq_ref = IF.Iq_ref;
 
@@ -144,39 +143,43 @@ void FOC_Main(void)
       // IQtest=IQtest+0.0001;
       // if(IQtest>IQtestMax) IQtest=0;
 
+      if (FOC.Iq_ref > 0)
+      {
+        float x = FOC.Iq_ref;
+        FOC.Id_ref =
+            ((((0.000004986 * x - 0.0003467) * x + 0.009454) * x - 0.1289) * x + 1.286) * x -
+            0.2316;  // MTPA
+        // FOC.Id_ref = (((-0.00000387*x+0.000307)*x-0.00688)*x+0.303)*x+0.113; // FC-MTPA
+      }
+      else
+      {
+        float x = -FOC.Iq_ref;
+        FOC.Id_ref =
+            ((((0.000004986 * x - 0.0003467) * x + 0.009454) * x - 0.1289) * x + 1.286) * x -
+            0.2316;  // MTPA
+        // FOC.Id_ref = (((-0.00000387*x+0.000307)*x-0.00688)*x+0.303)*x+0.113; // FC-MTPA
+      }
 
-      // if(FOC.Iq_ref>0)
-      // {float x1=FOC.Iq_ref;
-      // float x2=x1*x1;
-      // float x3=x2*x1;float x4=x3*x1;
-      // FOC.Id_ref = -0.000005113*x4+ 0.00056307*x3-0.022613*x2+0.74113*x1+0.58913; // MTPA
-      // }
-      // else
-      // {float x1=-FOC.Iq_ref;
-      // float x2=x1*x1; float x3=x2*x1;float x4=x3*x1;
-      // FOC.Id_ref = -0.000005113*x4+ 0.00056307*x3-0.022613*x2+0.74113*x1+0.58913; // MTPA
-      // }
-      
-     float Iq_meas = FOC.Iq_ref; // 从传感器或速度环估计得到的 Iq 目标
-     float Id_mtpa;
-     float Iq_out;
+      //  float Iq_meas = FOC.Iq_ref; // 从传感器或速度环估计得到的 Iq 目标
+      //  float Id_mtpa;
+      //  float Iq_out;
 
-
-      
-     if (FOC.Iq_ref>=0)
-        {
-        MTPA_interp_by_Iq(mtpa_table, MTPA_TABLE_POINTS, Iq_meas, &Id_mtpa, &Iq_out);
-        FOC.Id_ref = Id_mtpa;
-        }
-        else
-        {
-           MTPA_interp_by_Iq(mtpa_table, MTPA_TABLE_POINTS, -Iq_meas, &Id_mtpa, &Iq_out);
-          FOC.Id_ref = Id_mtpa;
-        }
+      /*MTPA插值*/
+      //  if (FOC.Iq_ref>=0)
+      //     {
+      //     MTPA_interp_by_Iq(mtpa_table, MTPA_TABLE_POINTS, Iq_meas, &Id_mtpa, &Iq_out);
+      //     FOC.Id_ref = Id_mtpa;
+      //     }
+      //     else
+      //     {
+      //        MTPA_interp_by_Iq(mtpa_table, MTPA_TABLE_POINTS, -Iq_meas, &Id_mtpa, &Iq_out);
+      //       FOC.Id_ref = Id_mtpa;
+      //     }
+      /*MTPA插值*/
       // FOC.Id_ref = IQtest;
       // if(FOC.Iq_ref>0)
       //   {FOC.Id_ref =FOC.Iq_ref;} // 限制 Id_ref <= 0
-      // else 
+      // else
       //   {FOC.Id_ref = -FOC.Iq_ref;}
 
       PID_Controller(FOC.Id_ref, FOC.Id, &Id_PID);
@@ -211,7 +214,6 @@ void FOC_Main(void)
       if (STOP == 0)
       {
         Experiment_Step(&Experiment, FOC.Id, FOC.Iq, &FOC.Ud_ref, &FOC.Uq_ref);
-        
       }
 
       break;
@@ -235,9 +237,11 @@ void FOC_Main(void)
 static inline float Cal_Power(FOC_Parameter_t* foc)
 {
   float power = 0.0F;
-  power = 1.5 * (foc->Ud_ref * foc->Id + foc->Uq_ref * foc->Iq)-foc->Id*foc->Id*Motor.Rs - foc->Iq*foc->Iq*Motor.Rs;
-  power = LowPassFilter_Update(&Power_Filter,power);
-  Electric_Te = power <= 10.0F ? 0 : power * 60.0F / (M_2PI * foc->Speed  + 0.0001F); // 计算电磁转矩
+  power = 1.5 * (foc->Ud_ref * foc->Id + foc->Uq_ref * foc->Iq) - foc->Id * foc->Id * Motor.Rs -
+          foc->Iq * foc->Iq * Motor.Rs;
+  power = LowPassFilter_Update(&Power_Filter, power);
+  Electric_Te =
+      power <= 10.0F ? 0 : power * 60.0F / (M_2PI * foc->Speed + 0.0001F);  // 计算电磁转矩
   return power;
 }
 
@@ -270,7 +274,7 @@ void Parameter_Init(void)
   Motor.Position_Scale = 10000 - 1;
   Motor.Resolver_Pn = 1.0F;
   Motor.inv_MotorPn = 1.0F / 2.0F;  // Pn
-  Motor.Position_Offset = 4260.0F;
+  Motor.Position_Offset = 1840.0F;
 
   MTPA.A = 0.00061141F;
   MTPA.B = -0.014627F;
@@ -295,8 +299,8 @@ void Parameter_Init(void)
   Speed_PID.Ts = 10 * FOC.Ts;
 
   Speed_Ramp.slope = 250.0F;  // limit to 50 rpm/s
-  Speed_Ramp.limit_min = -1800.0F;
-  Speed_Ramp.limit_max = 1800.0F;
+  Speed_Ramp.limit_min = -3000.0F;
+  Speed_Ramp.limit_max = 3000.0F;
   Speed_Ramp.value = 0.0F;
   Speed_Ramp.target = 0.0F;
   Speed_Ramp.Ts = 10 * FOC.Ts;
@@ -393,7 +397,6 @@ static inline float wrap_theta_2pi(float theta)
   }
   return theta;
 }
-
 
 LowPassFilter_t Speed_Filter = {.a = 0.98442F, .y_last = 0.0F};
 
