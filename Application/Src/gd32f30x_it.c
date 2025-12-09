@@ -189,13 +189,16 @@ void ADC0_1_IRQHandler(void)
           Theta_max = FOC.Theta;
         }
 
-        float DMA_Buffer[5];
+        float DMA_Buffer[7];
         DMA_Buffer[0] = VoltageInjector.Vd;
         DMA_Buffer[1] = VoltageInjector.Vq;
         DMA_Buffer[2] = FOC.Id;
         DMA_Buffer[3] = FOC.Iq;
         DMA_Buffer[4] = (float)VoltageInjector.Count;
-        justfloat(DMA_Buffer, 5);
+        DMA_Buffer[5] =FOC.Position;
+        float We=2*FOC.Speed * M_2PI / 60.0F;
+        DMA_Buffer[6] = We;
+        justfloat(DMA_Buffer, 7);
         break;
       }
       case EXIT:
@@ -213,13 +216,13 @@ void ADC0_1_IRQHandler(void)
   }
 }
 
-void EXTI5_9_IRQHandler(void)
+void EXTI4_IRQHandler(void)
 {
-  if (RESET != exti_interrupt_flag_get(EXTI_7))
+  if (RESET != exti_interrupt_flag_get(EXTI_4))
   {
     TIMER_SWEVG(TIMER0) |= TIMER_SWEVG_BRKG;
     STOP = 1;
-    exti_interrupt_flag_clear(EXTI_7);
+    exti_interrupt_flag_clear(EXTI_4);
   }
 }
 

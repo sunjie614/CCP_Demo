@@ -14,7 +14,8 @@ typedef struct
     float Uq_amp;
     float Vd;
     float Vq;
-    float Imax;
+    float Idmax;
+    float Iqmax;
     float Theta;
     Wavetype_t Type; // SQ: Square Wave, HF_SQ: High Frequency Square Wave
     EnableStatus State; // 0: Idle, 1: Injecting

@@ -128,8 +128,8 @@ void FOC_Main(void)
     {
       ParkTransform(Clarke.Ialpha, Clarke.Ibeta, FOC.Theta, &FOC);
 
-      //SquareWaveGenerater(&VoltageInjector, &FOC);
-      HighFrequencySquareWaveGenerater(&VoltageInjector);
+      SquareWaveGenerater(&VoltageInjector, &FOC);
+      // HighFrequencySquareWaveGenerater(&VoltageInjector);
 
       FOC.Ud_ref = VoltageInjector.Vd;
       FOC.Uq_ref = VoltageInjector.Vq;
@@ -178,7 +178,7 @@ void Parameter_Init(void)
   Motor.Position_Scale = 10000 - 1;
   Motor.Resolver_Pn = 1.0F;
   Motor.inv_MotorPn = 1.0F / 2.0F;  // Pn
-  Motor.Position_Offset = 107.0F;
+  Motor.Position_Offset = 1840.0F;
 
 #ifdef Resolver_Position
   theta_factor = M_2PI / ((Motor.Position_Scale + 1) * Motor.Resolver_Pn);
@@ -207,9 +207,9 @@ void Parameter_Init(void)
   Id_PID.Kp = 73.8274273F;
   Id_PID.Ki = 408.40704496F;
   Id_PID.Kd = 0.0F;
-  Id_PID.MaxOutput = 50.0F;  // Maximum Udc/sqrt(3)
-  Id_PID.MinOutput = -50.0F;
-  Id_PID.IntegralLimit = 50.0F;
+  Id_PID.MaxOutput = 400.0F;  // Maximum Udc/sqrt(3)
+  Id_PID.MinOutput = -400.0F;
+  Id_PID.IntegralLimit = 400.0F;
   Id_PID.previous_error = 0.0F;
   Id_PID.integral = 0.0F;
   Id_PID.output = 0.0F;
@@ -218,9 +218,9 @@ void Parameter_Init(void)
   Iq_PID.Kp = 27.646015F;
   Iq_PID.Ki = 408.40704496F;
   Iq_PID.Kd = 0.0F;
-  Iq_PID.MaxOutput = 50.0F;
-  Iq_PID.MinOutput = -50.0F;
-  Iq_PID.IntegralLimit = 50.0F;
+  Iq_PID.MaxOutput = 400.0F;
+  Iq_PID.MinOutput = -400.0F;
+  Iq_PID.IntegralLimit = 400.0F;
   Iq_PID.previous_error = 0.0F;
   Iq_PID.integral = 0.0F;
   Iq_PID.output = 0.0F;

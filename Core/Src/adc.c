@@ -43,7 +43,7 @@ void ADC_Read_Regular(float* Udc, float* inv_Udc)
 {
     // //< 916 for 224V 58 for 0V >//
     dc_raw = adc_value[0] & 0xFFFF;
-    *Udc = 0.2686202686202686f * ((float)dc_raw - 88.0f);
+    *Udc = 0.2686202686202686f * ((float)dc_raw - 180.0f);
     *inv_Udc = (1.0f / *Udc) > 0.01f ? 0.0f : (1.0f / *Udc);
     Temperature = adc_to_temp(adc_value[1] & 0xFFFF);
 }

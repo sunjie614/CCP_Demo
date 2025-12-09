@@ -7,9 +7,9 @@
 #include "stdint.h"
 
 #define Temperature_Threshold 80.0F
-#define Current_Threshold 10.0F
-#define Voltage_Rate 220.0F
-#define Voltage_Fluctuation 40.0F
+#define Current_Threshold 35.0F
+#define Voltage_Rate 540.0F
+#define Voltage_Fluctuation 60.0F
 
 typedef enum
 {

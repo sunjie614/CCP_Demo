@@ -5,7 +5,8 @@ VoltageInjector_t VoltageInjector = {
     .Count = 0,
     .Vd = 0.0F,
     .Vq = 0.0F,
-    .Imax = 0.0F,  // Maximum current for voltage injection
+    .Idmax = 0.0F,  // Maximum current for voltage injection
+    .Iqmax = 0.0F,
     .PulseWidth = 0
 };
 
@@ -19,21 +20,21 @@ void SquareWaveGenerater(VoltageInjector_t* inj, FOC_Parameter_t* foc)
     // Ud 分量判断
     if (inj->Vd >= 0.0F)
     {
-      ud = (foc->Id >= inj->Imax) ? -inj->Ud_amp : inj->Ud_amp;
+      ud = (foc->Id >= inj->Idmax) ? -inj->Ud_amp : inj->Ud_amp;
     }
     else
     {
-      ud = (foc->Id <= -inj->Imax) ? inj->Ud_amp : -inj->Ud_amp;
+      ud = (foc->Id <= -inj->Idmax) ? inj->Ud_amp : -inj->Ud_amp;
     }
 
     // Uq 分量判断
     if (inj->Vq >= 0.0F)
     {
-      uq = (foc->Iq >= inj->Imax) ? -inj->Uq_amp : inj->Uq_amp;
+      uq = (foc->Iq >= inj->Iqmax) ? -inj->Uq_amp : inj->Uq_amp;
     }
     else
     {
-      uq = (foc->Iq <= -inj->Imax) ? inj->Uq_amp : -inj->Uq_amp;
+      uq = (foc->Iq <= -inj->Iqmax) ? inj->Uq_amp : -inj->Uq_amp;
     }
 
     inj->Vd = ud;
